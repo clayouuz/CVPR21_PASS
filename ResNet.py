@@ -129,6 +129,27 @@ class Bottleneck(nn.Module):
 
 
 class ResNet(nn.Module):
+    """
+    ResNet class for constructing Residual Networks.
+
+    Args:
+        block (nn.Module): The basic building block for the ResNet.
+        layers (list): A list of integers specifying the number of blocks in each layer.
+        num_classes (int): The number of output classes.
+
+    Attributes:
+        conv1 (nn.Conv2d): The first convolutional layer.
+        bn1 (nn.BatchNorm2d): Batch normalization layer after the first convolutional layer.
+        relu (nn.ReLU): ReLU activation function.
+        maxpool (nn.MaxPool2d): Max pooling layer.
+        layer1 (nn.Sequential): The first layer of residual blocks.
+        layer2 (nn.Sequential): The second layer of residual blocks.
+        layer3 (nn.Sequential): The third layer of residual blocks.
+        layer4 (nn.Sequential): The fourth layer of residual blocks.
+        feature (nn.AvgPool2d): Average pooling layer.
+        fc (nn.Linear): Fully connected layer for classification.
+
+    """
 
     def __init__(self, block, layers, num_classes=100):
         self.inplanes = 64
@@ -154,6 +175,19 @@ class ResNet(nn.Module):
                 m.bias.data.zero_()
 
     def _make_layer(self, block, planes, blocks, stride=1):
+        """
+        Helper function to create a layer of residual blocks.
+
+        Args:
+            block (nn.Module): The basic building block for the ResNet.
+            planes (int): The number of output channels for each block.
+            blocks (int): The number of blocks in the layer.
+            stride (int): The stride for the first block in the layer.
+
+        Returns:
+            nn.Sequential: The layer of residual blocks.
+
+        """
         downsample = None
         if stride != 1 or self.inplanes != planes * block.expansion:
             downsample = nn.Sequential(
@@ -170,6 +204,16 @@ class ResNet(nn.Module):
         return nn.Sequential(*layers)
 
     def forward(self, x):
+        """
+        Forward pass of the ResNet.
+
+        Args:
+            x (torch.Tensor): The input tensor.
+
+        Returns:
+            torch.Tensor: The output tensor.
+
+        """
         x = self.conv1(x)
         x = self.bn1(x)
         x = self.relu(x)
