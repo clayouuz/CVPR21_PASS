@@ -44,11 +44,13 @@ class protoAugSSL:
         ])
         self.train_dataset = iCIFAR100('./dataset',
                                        transform=self.train_transform,
-                                       download=True)
+                                       download=True,
+                                       testmode=True)
         self.test_dataset = iCIFAR100('./dataset',
                                       test_transform=self.test_transform,
                                       train=False,
-                                      download=True)
+                                      download=True,
+                                      testmode=True)
         self.train_loader = None#
         self.test_loader = None
 
@@ -138,7 +140,7 @@ class protoAugSSL:
                                      1).view(-1)
 
                 opt.zero_grad()  # 梯度清零
-                loss = self._compute_loss(images, target, old_class)
+                loss = self._compute_loss(images, target, old_class,loss_fun_name='pass')
                 opt.zero_grad()
                 loss.backward()  #通过链式法则，从损失开始，沿着计算图向后传播，计算每个参数的梯度。
                 opt.step()  #通过使用计算出的梯度，按照优化器的更新规则（如梯度下降、Adam 等）更新每个参数。
@@ -164,56 +166,63 @@ class protoAugSSL:
         self.model.train()
         return accuracy
 
-    def _compute_loss(self, imgs, target, old_class=0):
-        """
-        这段代码定义了一个名为 _compute_loss 的方法，用于计算模型的损失。这个方法接收三个参数：图像、目标和旧类别的数量。
+    def _compute_loss(self, imgs, target, old_class=0,loss_fun_name='pass'):
+        if loss_fun_name == 'pass':
+            """
+            这段代码定义了一个名为 _compute_loss 的方法，用于计算模型的损失。这个方法接收三个参数：图像、目标和旧类别的数量。
 
-        首先，这个方法调用模型的前向传播方法，计算模型在这批图像上的输出。然后，将输出和目标都移动到设备上，计算分类损失。这里使用的是交叉熵损失，且在计算损失之前，将模型的输出除以一个温度参数，这是一种常用的技巧，可以使模型的预测更加平滑。
+            首先，这个方法调用模型的前向传播方法，计算模型在这批图像上的输出。然后，将输出和目标都移动到设备上，计算分类损失。这里使用的是交叉熵损失，且在计算损失之前，将模型的输出除以一个温度参数，这是一种常用的技巧，可以使模型的预测更加平滑。
 
-        如果没有旧模型，就直接返回分类损失。否则，还需要计算知识蒸馏损失和原型增强损失。
+            如果没有旧模型，就直接返回分类损失。否则，还需要计算知识蒸馏损失和原型增强损失。
 
-        知识蒸馏损失是新模型的特征和旧模型的特征之间的欧氏距离。这个损失的目的是让新模型的特征尽可能接近旧模型的特征。
+            知识蒸馏损失是新模型的特征和旧模型的特征之间的欧氏距离。这个损失的目的是让新模型的特征尽可能接近旧模型的特征。
 
-        原型增强损失是对原型进行随机扰动后的特征和原型的类别之间的交叉熵损失。首先，对旧类别的索引进行随机打乱，然后对每个索引对应的原型添加一个正态随机噪声，得到扰动后的原型。然后，计算扰动后的原型的类别，这个类别是原型的类别乘以4。然后，将扰动后的原型和类别都移动到设备上，计算模型在扰动后的原型上的输出，然后计算输出和类别之间的交叉熵损失。
+            原型增强损失是对原型进行随机扰动后的特征和原型的类别之间的交叉熵损失。首先，对旧类别的索引进行随机打乱，然后对每个索引对应的原型添加一个正态随机噪声，得到扰动后的原型。然后，计算扰动后的原型的类别，这个类别是原型的类别乘以4。然后，将扰动后的原型和类别都移动到设备上，计算模型在扰动后的原型上的输出，然后计算输出和类别之间的交叉熵损失。
 
-        最后，返回分类损失、原型增强损失和知识蒸馏损失的加权和。这里的权重是可以调节的超参数，可以根据实际情况进行调整。
+            最后，返回分类损失、原型增强损失和知识蒸馏损失的加权和。这里的权重是可以调节的超参数，可以根据实际情况进行调整。
 
-        总的来说，这个方法的主要目的是计算模型的损失，包括分类损失、知识蒸馏损失和原型增强损失。这三种损失各有其特点，分类损失关注模型的预测能力，知识蒸馏损失关注模型的特征保持一致性，原型增强损失关注模型对原型的鲁棒性。
-        """
-        #暂存模型对imgs的输出
-        output = self.model(imgs)
-        output, target = output.to(self.device), target.to(self.device)
-        #分类损失,计算方法为交叉熵损失，output除以温度参数，提高模型的泛化能力
-        loss_cls = nn.CrossEntropyLoss()(output / self.args.temp, target)
-        if self.old_model is None:
-            return loss_cls
-        else:
-            feature = self.model.feature(imgs)
-            feature_old = self.old_model.feature(imgs)
-            #知识蒸馏损失，计算新旧模型的张量距离
-            loss_kd = torch.dist(feature, feature_old, 2)
+            总的来说，这个方法的主要目的是计算模型的损失，包括分类损失、知识蒸馏损失和原型增强损失。这三种损失各有其特点，分类损失关注模型的预测能力，知识蒸馏损失关注模型的特征保持一致性，原型增强损失关注模型对原型的鲁棒性。
+            """
+            #暂存模型对imgs的输出
+            output = self.model(imgs)
+            output, target = output.to(self.device), target.to(self.device)
+            #分类损失,计算方法为交叉熵损失，output除以温度参数，提高模型的泛化能力
+            loss_cls = nn.CrossEntropyLoss()(output / self.args.temp, target.long())
+            if self.old_model is None:
+                return loss_cls
+            else:
+                feature = self.model.feature(imgs)
+                feature_old = self.old_model.feature(imgs)
+                #知识蒸馏损失，计算新旧模型的张量距离
+                loss_kd = torch.dist(feature, feature_old, 2)
 
-            proto_aug = []
-            proto_aug_label = []
-            index = list(range(old_class))
-            #对原型进行随机扰动
-            for _ in range(self.args.batch_size):
-                np.random.shuffle(index)
-                temp = self.prototype[index[0]] + np.random.normal(
-                    0, 1, 512) * self.radius
-                proto_aug.append(temp)
-                proto_aug_label.append(4 * self.class_label[index[0]])
+                proto_aug = []
+                proto_aug_label = []
+                index = list(range(old_class))
+                #对原型进行随机扰动
+                for _ in range(self.args.batch_size):
+                    np.random.shuffle(index)
+                    if len(self.prototype) <= index[0]:
 
-            proto_aug = torch.from_numpy(np.float32(
-                np.asarray(proto_aug))).float().to(self.device)
-            proto_aug_label = torch.from_numpy(np.asarray(proto_aug_label)).to(
-                self.device)
-            soft_feat_aug = self.model.fc(proto_aug)
-            #原型增强损失
-            loss_protoAug = nn.CrossEntropyLoss()(
-                soft_feat_aug / self.args.temp, proto_aug_label)
+                        temp =np.random.normal(0, 1, 512) * self.radius
+                    else:
+                        temp = self.prototype[index[0]] + np.random.normal(0, 1, 512) * self.radius
+                    proto_aug.append(temp)
+                    if len(self.class_label) <= index[0]:
+                        proto_aug_label.append(0)
+                    else:
+                        proto_aug_label.append(4 * self.class_label[index[0]])
 
-            return loss_cls + self.args.protoAug_weight * loss_protoAug + self.args.kd_weight * loss_kd
+                proto_aug = torch.from_numpy(np.float32(
+                    np.asarray(proto_aug))).float().to(self.device)
+                proto_aug_label = torch.from_numpy(np.asarray(proto_aug_label)).to(
+                    self.device)
+                soft_feat_aug = self.model.fc(proto_aug)
+                #原型增强损失
+                loss_protoAug = nn.CrossEntropyLoss()(
+                    (soft_feat_aug / self.args.temp), proto_aug_label.long())
+
+                return loss_cls + self.args.protoAug_weight * loss_protoAug + self.args.kd_weight * loss_kd
 
     def afterTrain(self):
         path = self.args.save_path + self.file_name + '/'

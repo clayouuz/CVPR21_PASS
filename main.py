@@ -9,8 +9,9 @@ from torch.optim.lr_scheduler import StepLR
 from torch.autograd import Variable
 import os
 import math
+import time
 import argparse
-import resource
+# import resource
 import pandas as pd
 import numpy as np
 import sklearn.metrics
@@ -23,9 +24,9 @@ from myNetwork import network
 from iCIFAR100 import iCIFAR100
 
 parser = argparse.ArgumentParser(description='Prototype Augmentation and Self-Supervision for Incremental Learning')
-parser.add_argument('--epochs', default=101, type=int, help='Total number of epochs to run')
+parser.add_argument('--epochs', default=3, type=int, help='Total number of epochs to run')
 parser.add_argument('--batch_size', default=64, type=int, help='Batch size for training')
-parser.add_argument('--print_freq', default=10, type=int, help='print frequency (default: 10)')
+parser.add_argument('--print_freq', default=1, type=int, help='print frequency (default: 10)')
 parser.add_argument('--data_name', default='cifar100', type=str, help='Dataset name to use')
 parser.add_argument('--total_nc', default=100, type=int, help='class number for the dataset')
 parser.add_argument('--fg_nc', default=50, type=int, help='the number of classes in first task')
@@ -85,7 +86,7 @@ def main():
 
     #每步增量学习的类别数。task_size = (总类别数 - 第一步类别数) / 总步数
     task_size = int((args.total_nc - args.fg_nc) / args.task_num)  
-    file_name = args.data_name + '_' + str(args.fg_nc) + '_' + str(args.task_num) + '*' + str(task_size) 
+    file_name = args.data_name + '_' + str(args.fg_nc) + '_' + str(args.task_num) + '+' + str(task_size) 
     #resnet18_cbam是一个ResNet18网络,历史悠久的公开方案，用来提取特征
     feature_extractor = resnet18_cbam()
 
@@ -109,4 +110,7 @@ def main():
 
 
 if __name__ == "__main__":
+    time_start = time.time()
     main()
+    time_end = time.time()
+    print('time cost', time_end - time_start, 's')
