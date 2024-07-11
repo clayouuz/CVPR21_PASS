@@ -11,7 +11,12 @@ import sys
 import numpy as np
 from myNetwork import network
 from iCIFAR100 import iCIFAR100
+from bSplineProto import bSplineProto
 
+from PIL import Image
+from skimage.feature import hog
+from skimage import color
+from sklearn.decomposition import PCA
 
 class protoAugSSL:
 
@@ -29,19 +34,40 @@ class protoAugSSL:
         self.device = device
         self.old_model = None
         #预处理
+        # self.train_transform = transforms.Compose([
+        #     transforms.RandomCrop((32, 32), padding=4),#随机裁剪
+        #     transforms.RandomHorizontalFlip(p=0.5),#随机水平翻转
+        #     transforms.ColorJitter(brightness=0.24705882352941178),#随机改变图像的亮度
+        #     transforms.ToTensor(),#将PIL Image或者 ndarray 转换为tensor，并且归一化至[0-1]
+        #     transforms.Normalize((0.5071, 0.4867, 0.4408),
+        #                          (0.2675, 0.2565, 0.2761))#标准化，参数来自对数据集的计算，分别是均值和标准差，rgb元组
+        # ])
+        # self.test_transform = transforms.Compose([
+        #     transforms.ToTensor(),
+        #     transforms.Normalize((0.5071, 0.4867, 0.4408),
+        #                          (0.2675, 0.2565, 0.2761))
+        # ])
+
         self.train_transform = transforms.Compose([
-            transforms.RandomCrop((32, 32), padding=4),#随机裁剪
-            transforms.RandomHorizontalFlip(p=0.5),#随机水平翻转
-            transforms.ColorJitter(brightness=0.24705882352941178),#随机改变图像的亮度
-            transforms.ToTensor(),#将PIL Image或者 ndarray 转换为tensor，并且归一化至[0-1]
-            transforms.Normalize((0.5071, 0.4867, 0.4408),
-                                 (0.2675, 0.2565, 0.2761))#标准化，参数来自对数据集的计算，分别是均值和标准差，rgb元组
+            transforms.Resize((64, 64)),  # 缩放图像到统一大小
+            transforms.RandomCrop((32, 32), padding=4),  # 随机裁剪
+            transforms.RandomHorizontalFlip(p=0.5),  # 随机水平翻转
+            transforms.ColorJitter(brightness=0.24705882352941178),  # 随机改变亮度
+            transforms.ToTensor(),  # 转换为Tensor
+            transforms.Normalize((0.5071, 0.4867, 0.4408),  # 标准化
+                                (0.2675, 0.2565, 0.2761)),
+            transforms.Lambda(lambda img: self._hog_pca_feature_extractor(img)),  # 应用HOG+PCA
         ])
+
+        # 修改后的测试转换流程
         self.test_transform = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize((0.5071, 0.4867, 0.4408),
-                                 (0.2675, 0.2565, 0.2761))
+            transforms.Resize((64, 64)),  # 缩放图像到统一大小
+            transforms.ToTensor(),  # 转换为Tensor
+            transforms.Normalize((0.5071, 0.4867, 0.4408),  # 标准化
+                                (0.2675, 0.2565, 0.2761)),
+            transforms.Lambda(lambda img: self._hog_pca_feature_extractor(img)),  # 应用HOG+PCA
         ])
+
         self.train_dataset = iCIFAR100('./dataset',
                                        transform=self.train_transform,
                                        download=True,
@@ -54,6 +80,29 @@ class protoAugSSL:
         self.train_loader = None#
         self.test_loader = None
 
+    def _hog_pca_feature_extractor(image, pca, target_dim=128):
+        # 将PIL图像转换为numpy数组
+        image_np = np.array(image)
+        # 转换为灰度图，因为HOG通常在灰度图上计算
+        if len(image_np.shape) == 3:
+            image_np = color.rgb2gray(image_np)
+        #计算PCA
+        pca = PCA(n_components=target_dim)
+        pca.fit(image_np)
+
+        # 计算HOG特征
+        hog_features = hog(image_np, pixels_per_cell=(8, 8), cells_per_block=(2, 2), orientations=9)
+        
+        # 展平HOG特征为一维数组
+        hog_features_flatten = hog_features.flatten()
+        
+        # 应用PCA降维
+        pca_features = pca.transform(hog_features_flatten.reshape(1, -1)).flatten()
+        
+        # 将PCA降维后的特征转换为Tensor
+        pca_tensor = torch.tensor(pca_features[0], dtype=torch.float32)
+        return pca_tensor
+    
     def map_new_class_index(self, y, order):
         '''
         元素按照order的顺序进行重新排列
@@ -140,7 +189,7 @@ class protoAugSSL:
                                      1).view(-1)
 
                 opt.zero_grad()  # 梯度清零
-                loss = self._compute_loss(images, target, old_class,loss_fun_name='pass')
+                loss = self._compute_loss(images, target, old_class,loss_fun_name=self.args.loss_fun_name)
                 opt.zero_grad()
                 loss.backward()  #通过链式法则，从损失开始，沿着计算图向后传播，计算每个参数的梯度。
                 opt.step()  #通过使用计算出的梯度，按照优化器的更新规则（如梯度下降、Adam 等）更新每个参数。
@@ -223,7 +272,22 @@ class protoAugSSL:
                     (soft_feat_aug / self.args.temp), proto_aug_label.long())
 
                 return loss_cls + self.args.protoAug_weight * loss_protoAug + self.args.kd_weight * loss_kd
-
+        elif loss_fun_name == 'test_loss_b':
+            output = self.model(imgs)
+            output, target = output.to(self.device), target.to(self.device)
+            loss_cls = nn.CrossEntropyLoss()(output / self.args.temp, target.long())
+            if self.old_model is None:
+                return loss_cls
+            else:
+                feature = self.model.feature(imgs)
+                feature_old = self.old_model.feature(imgs)
+            loss_kd = torch.dist(feature, feature_old, 2)
+             # B-spline smoothness regularization term
+            # Assuming y_pred is a tensor with shape [batch_size, sequence_length]
+            # Compute the second-order difference for each sequence in the batch
+            loss_b=BSplineSmoothLoss(lam=0.1)(output, target)
+            return loss_cls + self.args.kd_weight * loss_kd + loss_b
+            
     def afterTrain(self):
         path = self.args.save_path + self.file_name + '/'
         if not os.path.isdir(path):
@@ -292,3 +356,18 @@ class protoAugSSL:
                                             axis=0)
             self.class_label = np.concatenate((class_label, self.class_label),
                                               axis=0)
+
+class BSplineSmoothLoss(nn.Module):
+    def __init__(self, lam=0.1):
+        super(BSplineSmoothLoss, self).__init__()
+        self.lam = lam
+
+    def forward(self, y_pred, y_true):
+
+        # B-spline smoothness regularization term
+        # Assuming y_pred is a tensor with shape [batch_size, sequence_length]
+        # Compute the second-order difference for each sequence in the batch
+        diff = y_pred[:, 2:] - 2 * y_pred[:, 1:-1] + y_pred[:, :-2]
+        smoothness_loss = torch.mean(diff**2)
+        
+        return self.lam * smoothness_loss

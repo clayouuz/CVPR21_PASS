@@ -37,6 +37,7 @@ parser.add_argument('--kd_weight', default=10.0, type=float, help='knowledge dis
 parser.add_argument('--temp', default=0.1, type=float, help='trianing time temperature')
 parser.add_argument('--gpu', default='0', type=str, help='GPU id to use')
 parser.add_argument('--save_path', default='model_saved_check/', type=str, help='save files directory')
+parser.add_argument('--loss_fun_name',default='pass',type=str,help='loss function name')
 
 args = parser.parse_args()
 print(args)
