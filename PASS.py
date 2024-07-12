@@ -34,7 +34,7 @@ class protoAugSSL:
         self.task_size = task_size  #每个任务学到的类别数
         self.device = device
         self.old_model = None
-        self.history_accuracies = torch.zeros(args.total_nc)
+        self.history_accuracies = None
         #预处理
         self.train_transform = transforms.Compose([
             transforms.RandomCrop((32, 32), padding=4),  #随机裁剪
@@ -204,7 +204,18 @@ class protoAugSSL:
         accuracy = correct.item() / total
         self.model.train()
         return accuracy
-
+    
+    def _output(self, testloader):
+        self.model.eval()
+        correct, total = 0.0, 0.0
+        for setp, (indexs, imgs, labels) in enumerate(testloader):
+            imgs, labels = imgs.to(self.device), labels.to(self.device)
+            with torch.no_grad():
+                outputs = self.model(imgs)
+            outputs = outputs[:, ::
+                              4]  # only compute predictions on original class nodes
+            predicts = torch.max(outputs, dim=1)[1]
+            return predicts
     def _compute_loss(self, imgs, target, old_class=0, loss_fun_name='pass'):
         if loss_fun_name == 'pass':
             """
@@ -274,23 +285,29 @@ class protoAugSSL:
             else:
                 feature = self.model.feature(imgs)
                 feature_old = self.old_model.feature(imgs)
-            loss_kd = torch.dist(feature, feature_old, 2)
-            # loss_b = BSplineSmoothLoss(lam=0.1)(output, target)
-            # return loss_cls + self.args.kd_weight * loss_kd + loss_b
-            drop_loss=(output-target)**2
-            drop_penalty= drop_loss.max()
-            return loss_cls + self.args.kd_weight * loss_kd + self.args.drop_penalty_weight*drop_penalty
+                loss_kd = torch.dist(feature, feature_old, 2)
+                # loss_b = BSplineSmoothLoss(lam=0.1)(output, target)
+                # return loss_cls + self.args.kd_weight * loss_kd + loss_b
+                output=self._test(self.test_loader)
+                drop_penalty = max(0, self.history_accuracies - output)
+                
+                # #模拟输出
+                # self.model.eval()
+                # predicts = self._output(self.test_loader)
+                # drop_loss=(predicts-target)**2
+                # drop_penalty= drop_loss.max()
+
+                return loss_cls + self.args.kd_weight * loss_kd + self.args.drop_penalty_weight*drop_penalty
 
     def afterTrain(self):
         path = self.args.save_path + self.file_name + '/'
         if not os.path.isdir(path):
             os.makedirs(path)
-        # if self.numclass == self.args.fg_nc:
-        #     self.history_accuracies[0:self.numclass] = self._test(
-        #         self.test_loader)
-        # else:
-        #     self.history_accuracies[self.numclass - self.task_size:self.numclass] = self._test(
-        #     self.test_loader)
+        if self.numclass == self.args.fg_nc:
+            self.history_accuracies=self._test(self.test_loader)
+        else:
+            self.history_accuracies=self._test(self.test_loader)
+
         self.numclass += self.task_size
         filename = path + '%d_model.pkl' % (self.numclass - self.task_size)
         torch.save(self.model, filename)
