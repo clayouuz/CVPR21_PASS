@@ -19,36 +19,6 @@ from skimage import color
 from sklearn.decomposition import PCA
 
 
-class MaxAccuracyDropLoss(nn.Module):
-    def __init__(self, num_classes, history_accuracies):
-        super(MaxAccuracyDropLoss, self).__init__()
-        # 假设history_accuracies是一个包含每个类别历史准确率的张量
-        self.register_buffer('history_accuracies', history_accuracies)
-
-        # 用于存储当前批次的准确率
-        self.current_accuracies = torch.zeros(num_classes)
-
-    def forward(self, outputs, targets):
-        # 计算当前批次的预测准确率
-        _, predicted = torch.max(outputs, 1)
-        correct = (predicted == targets).float()
-        self.current_accuracies = correct.mean(dim=0)
-
-        # 计算准确率下降量
-        accuracy_drop = self.history_accuracies - self.current_accuracies
-
-        #如果下降量为负数，将其设置为0
-        accuracy_drop[accuracy_drop < 0] = 0
-
-        # 找出准确率下降最多的量
-        max_accuracy_drop = torch.max(accuracy_drop).item()
-
-        # 可以选择将这个值作为惩罚项的一部分
-        penalty_term = max_accuracy_drop
-
-        return penalty_term
-
-
 class protoAugSSL:
 
     def __init__(self, args, file_name, feature_extractor, task_size, device):
@@ -307,11 +277,8 @@ class protoAugSSL:
             loss_kd = torch.dist(feature, feature_old, 2)
             # loss_b = BSplineSmoothLoss(lam=0.1)(output, target)
             # return loss_cls + self.args.kd_weight * loss_kd + loss_b
-            max_drop_loss = MaxAccuracyDropLoss(self.numclass,
-                                                self.history_accuracies)
-            output = self.model(imgs)
-            output, target = output.to(self.device), target.to(self.device)
-            drop_penalty = max_drop_loss(output, target)
+            drop_loss=(output-target)**2
+            drop_penalty= drop_loss.max()
             return loss_cls + self.args.kd_weight * loss_kd + self.args.drop_penalty_weight*drop_penalty
 
     def afterTrain(self):
