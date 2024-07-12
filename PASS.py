@@ -18,6 +18,37 @@ from skimage.feature import hog
 from skimage import color
 from sklearn.decomposition import PCA
 
+
+class MaxAccuracyDropLoss(nn.Module):
+    def __init__(self, num_classes, history_accuracies):
+        super(MaxAccuracyDropLoss, self).__init__()
+        # 假设history_accuracies是一个包含每个类别历史准确率的张量
+        self.register_buffer('history_accuracies', history_accuracies)
+
+        # 用于存储当前批次的准确率
+        self.current_accuracies = torch.zeros(num_classes)
+
+    def forward(self, outputs, targets):
+        # 计算当前批次的预测准确率
+        _, predicted = torch.max(outputs, 1)
+        correct = (predicted == targets).float()
+        self.current_accuracies = correct.mean(dim=0)
+
+        # 计算准确率下降量
+        accuracy_drop = self.history_accuracies - self.current_accuracies
+
+        #如果下降量为负数，将其设置为0
+        accuracy_drop[accuracy_drop < 0] = 0
+
+        # 找出准确率下降最多的量
+        max_accuracy_drop = torch.max(accuracy_drop).item()
+
+        # 可以选择将这个值作为惩罚项的一部分
+        penalty_term = max_accuracy_drop
+
+        return penalty_term
+
+
 class protoAugSSL:
 
     def __init__(self, args, file_name, feature_extractor, task_size, device):
@@ -29,45 +60,26 @@ class protoAugSSL:
         self.radius = 0
         self.prototype = None
         self.class_label = None
-        self.numclass = args.fg_nc#第一个任务的类别数
-        self.task_size = task_size#每个任务学到的类别数
+        self.numclass = args.fg_nc  #第一个任务的类别数
+        self.task_size = task_size  #每个任务学到的类别数
         self.device = device
         self.old_model = None
+        self.history_accuracies = torch.zeros(args.total_nc)
         #预处理
-        # self.train_transform = transforms.Compose([
-        #     transforms.RandomCrop((32, 32), padding=4),#随机裁剪
-        #     transforms.RandomHorizontalFlip(p=0.5),#随机水平翻转
-        #     transforms.ColorJitter(brightness=0.24705882352941178),#随机改变图像的亮度
-        #     transforms.ToTensor(),#将PIL Image或者 ndarray 转换为tensor，并且归一化至[0-1]
-        #     transforms.Normalize((0.5071, 0.4867, 0.4408),
-        #                          (0.2675, 0.2565, 0.2761))#标准化，参数来自对数据集的计算，分别是均值和标准差，rgb元组
-        # ])
-        # self.test_transform = transforms.Compose([
-        #     transforms.ToTensor(),
-        #     transforms.Normalize((0.5071, 0.4867, 0.4408),
-        #                          (0.2675, 0.2565, 0.2761))
-        # ])
-
         self.train_transform = transforms.Compose([
-            transforms.Resize((64, 64)),  # 缩放图像到统一大小
-            transforms.RandomCrop((32, 32), padding=4),  # 随机裁剪
-            transforms.RandomHorizontalFlip(p=0.5),  # 随机水平翻转
-            transforms.ColorJitter(brightness=0.24705882352941178),  # 随机改变亮度
-            transforms.ToTensor(),  # 转换为Tensor
-            transforms.Normalize((0.5071, 0.4867, 0.4408),  # 标准化
-                                (0.2675, 0.2565, 0.2761)),
-            transforms.Lambda(lambda img: self._hog_pca_feature_extractor(img)),  # 应用HOG+PCA
+            transforms.RandomCrop((32, 32), padding=4),  #随机裁剪
+            transforms.RandomHorizontalFlip(p=0.5),  #随机水平翻转
+            transforms.ColorJitter(brightness=0.24705882352941178),  #随机改变图像的亮度
+            transforms.ToTensor(),  #将PIL Image或者 ndarray 转换为tensor，并且归一化至[0-1]
+            transforms.Normalize(
+                (0.5071, 0.4867, 0.4408),
+                (0.2675, 0.2565, 0.2761))  #标准化，参数来自对数据集的计算，分别是均值和标准差，rgb元组
         ])
-
-        # 修改后的测试转换流程
         self.test_transform = transforms.Compose([
-            transforms.Resize((64, 64)),  # 缩放图像到统一大小
-            transforms.ToTensor(),  # 转换为Tensor
-            transforms.Normalize((0.5071, 0.4867, 0.4408),  # 标准化
-                                (0.2675, 0.2565, 0.2761)),
-            transforms.Lambda(lambda img: self._hog_pca_feature_extractor(img)),  # 应用HOG+PCA
+            transforms.ToTensor(),
+            transforms.Normalize((0.5071, 0.4867, 0.4408),
+                                 (0.2675, 0.2565, 0.2761))
         ])
-
         self.train_dataset = iCIFAR100('./dataset',
                                        transform=self.train_transform,
                                        download=True,
@@ -77,7 +89,7 @@ class protoAugSSL:
                                       train=False,
                                       download=True,
                                       testmode=True)
-        self.train_loader = None#
+        self.train_loader = None  #
         self.test_loader = None
 
     def _hog_pca_feature_extractor(image, pca, target_dim=128):
@@ -91,18 +103,22 @@ class protoAugSSL:
         pca.fit(image_np)
 
         # 计算HOG特征
-        hog_features = hog(image_np, pixels_per_cell=(8, 8), cells_per_block=(2, 2), orientations=9)
-        
+        hog_features = hog(image_np,
+                           pixels_per_cell=(8, 8),
+                           cells_per_block=(2, 2),
+                           orientations=9)
+
         # 展平HOG特征为一维数组
         hog_features_flatten = hog_features.flatten()
-        
+
         # 应用PCA降维
-        pca_features = pca.transform(hog_features_flatten.reshape(1, -1)).flatten()
-        
+        pca_features = pca.transform(hog_features_flatten.reshape(
+            1, -1)).flatten()
+
         # 将PCA降维后的特征转换为Tensor
         pca_tensor = torch.tensor(pca_features[0], dtype=torch.float32)
         return pca_tensor
-    
+
     def map_new_class_index(self, y, order):
         '''
         元素按照order的顺序进行重新排列
@@ -182,14 +198,18 @@ class protoAugSSL:
 
                 # self-supervised learning based label augmentation
                 # 旋转图像，更新标签
-                images = torch.stack(  
+                images = torch.stack(
                     [torch.rot90(images, k, (2, 3)) for k in range(4)], 1)
                 images = images.view(-1, 3, 32, 32)
                 target = torch.stack([target * 4 + k for k in range(4)],
                                      1).view(-1)
 
                 opt.zero_grad()  # 梯度清零
-                loss = self._compute_loss(images, target, old_class,loss_fun_name=self.args.loss_fun_name)
+                loss = self._compute_loss(
+                    images,
+                    target,
+                    old_class,
+                    loss_fun_name=self.args.loss_fun_name)
                 opt.zero_grad()
                 loss.backward()  #通过链式法则，从损失开始，沿着计算图向后传播，计算每个参数的梯度。
                 opt.step()  #通过使用计算出的梯度，按照优化器的更新规则（如梯度下降、Adam 等）更新每个参数。
@@ -215,7 +235,7 @@ class protoAugSSL:
         self.model.train()
         return accuracy
 
-    def _compute_loss(self, imgs, target, old_class=0,loss_fun_name='pass'):
+    def _compute_loss(self, imgs, target, old_class=0, loss_fun_name='pass'):
         if loss_fun_name == 'pass':
             """
             这段代码定义了一个名为 _compute_loss 的方法，用于计算模型的损失。这个方法接收三个参数：图像、目标和旧类别的数量。
@@ -236,7 +256,8 @@ class protoAugSSL:
             output = self.model(imgs)
             output, target = output.to(self.device), target.to(self.device)
             #分类损失,计算方法为交叉熵损失，output除以温度参数，提高模型的泛化能力
-            loss_cls = nn.CrossEntropyLoss()(output / self.args.temp, target.long())
+            loss_cls = nn.CrossEntropyLoss()(output / self.args.temp,
+                                             target.long())
             if self.old_model is None:
                 return loss_cls
             else:
@@ -253,9 +274,10 @@ class protoAugSSL:
                     np.random.shuffle(index)
                     if len(self.prototype) <= index[0]:
 
-                        temp =np.random.normal(0, 1, 512) * self.radius
+                        temp = np.random.normal(0, 1, 512) * self.radius
                     else:
-                        temp = self.prototype[index[0]] + np.random.normal(0, 1, 512) * self.radius
+                        temp = self.prototype[index[0]] + np.random.normal(
+                            0, 1, 512) * self.radius
                     proto_aug.append(temp)
                     if len(self.class_label) <= index[0]:
                         proto_aug_label.append(0)
@@ -264,35 +286,44 @@ class protoAugSSL:
 
                 proto_aug = torch.from_numpy(np.float32(
                     np.asarray(proto_aug))).float().to(self.device)
-                proto_aug_label = torch.from_numpy(np.asarray(proto_aug_label)).to(
-                    self.device)
+                proto_aug_label = torch.from_numpy(
+                    np.asarray(proto_aug_label)).to(self.device)
                 soft_feat_aug = self.model.fc(proto_aug)
                 #原型增强损失
                 loss_protoAug = nn.CrossEntropyLoss()(
                     (soft_feat_aug / self.args.temp), proto_aug_label.long())
 
                 return loss_cls + self.args.protoAug_weight * loss_protoAug + self.args.kd_weight * loss_kd
-        elif loss_fun_name == 'test_loss_b':
+        elif loss_fun_name == 'test_loss':
             output = self.model(imgs)
             output, target = output.to(self.device), target.to(self.device)
-            loss_cls = nn.CrossEntropyLoss()(output / self.args.temp, target.long())
+            loss_cls = nn.CrossEntropyLoss()(output / self.args.temp,
+                                             target.long())
             if self.old_model is None:
                 return loss_cls
             else:
                 feature = self.model.feature(imgs)
                 feature_old = self.old_model.feature(imgs)
             loss_kd = torch.dist(feature, feature_old, 2)
-             # B-spline smoothness regularization term
-            # Assuming y_pred is a tensor with shape [batch_size, sequence_length]
-            # Compute the second-order difference for each sequence in the batch
-            loss_b=BSplineSmoothLoss(lam=0.1)(output, target)
-            return loss_cls + self.args.kd_weight * loss_kd + loss_b
-            
+            # loss_b = BSplineSmoothLoss(lam=0.1)(output, target)
+            # return loss_cls + self.args.kd_weight * loss_kd + loss_b
+            max_drop_loss = MaxAccuracyDropLoss(self.numclass,
+                                                self.history_accuracies)
+            output = self.model(imgs)
+            output, target = output.to(self.device), target.to(self.device)
+            drop_penalty = max_drop_loss(output, target)
+            return loss_cls + self.args.kd_weight * loss_kd + self.args.drop_penalty_weight*drop_penalty
+
     def afterTrain(self):
         path = self.args.save_path + self.file_name + '/'
         if not os.path.isdir(path):
             os.makedirs(path)
-
+        # if self.numclass == self.args.fg_nc:
+        #     self.history_accuracies[0:self.numclass] = self._test(
+        #         self.test_loader)
+        # else:
+        #     self.history_accuracies[self.numclass - self.task_size:self.numclass] = self._test(
+        #     self.test_loader)
         self.numclass += self.task_size
         filename = path + '%d_model.pkl' % (self.numclass - self.task_size)
         torch.save(self.model, filename)
@@ -310,7 +341,7 @@ class protoAugSSL:
         with torch.no_grad():
             for i, (indexs, images, target) in enumerate(loader):
                 feature = model.feature(images.to(self.device))
-#TODO 几个reshape整不会了
+                #TODO 几个reshape整不会了
                 if feature.shape[0] == self.args.batch_size:
                     labels.append(target.numpy())
                     features.append(feature.cpu().numpy())
@@ -322,7 +353,6 @@ class protoAugSSL:
             features,
             (features.shape[0] * features.shape[1], features.shape[2]))
         feature_dim = features.shape[1]
-
         '''
 首先，代码创建了三个空列表prototype、radius和class_label，用于存储每个类别的原型、半径和标签。
 
@@ -334,9 +364,9 @@ class protoAugSSL:
 
 如果当前任务不是第一个任务，那么代码会将新计算的原型和类别标签添加到已有的原型和类别标签中。这是通过np.concatenate函数实现的，该函数可以将两个数组沿指定的轴连接起来。
         '''
-        prototype = []#原型
-        radius = []#原型的半径，通过原型生成时会用到
-        class_label = []#类标签
+        prototype = []  #原型
+        radius = []  #原型的半径，通过原型生成时会用到
+        class_label = []  #类标签
         for item in labels_set:
             index = np.where(item == labels)[0]
             class_label.append(item)
@@ -369,5 +399,5 @@ class BSplineSmoothLoss(nn.Module):
         # Compute the second-order difference for each sequence in the batch
         diff = y_pred[:, 2:] - 2 * y_pred[:, 1:-1] + y_pred[:, :-2]
         smoothness_loss = torch.mean(diff**2)
-        
+
         return self.lam * smoothness_loss
