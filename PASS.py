@@ -347,3 +347,53 @@ class protoAugSSL:
                                             axis=0)
             self.class_label = np.concatenate((class_label, self.class_label),
                                               axis=0)
+            
+#fedknow-fisher
+    def compute_offsets(task, nc_per_task, is_cifar=True):
+        """
+            Compute offsets for cifar to determine which
+            outputs to select for a given task.
+        """
+        if is_cifar:
+            offset1 = task * nc_per_task
+            offset2 = (task + 1) * nc_per_task
+        else:
+            offset1 = 0
+            offset2 = nc_per_task
+        return offset1, offset2
+
+    def fisher_matrix_diag(self,t,dataloader, model):
+        # Init
+        fisher = {}
+        for n, p in model.feature_net.named_parameters():
+            fisher[n] = 0 * p.data
+        # Compute
+        model.train()
+        criterion = torch.nn.CrossEntropyLoss()
+        offset1, offset2 = self.compute_offsets(t, 10)
+        all_num = 0
+        for images,target in dataloader:
+            images = images.cuda()
+            target = (target - 10 * t).cuda()
+            all_num += images.shape[0]
+            # Forward and backward
+            model.zero_grad()
+            outputs = model.forward(images, t)[:, offset1: offset2]
+            loss = criterion(outputs, target)
+            loss.backward()
+            # Get gradients
+            for n, p in model.feature_net.named_parameters():
+                if p.grad is not None:
+                    fisher[n] += images.shape[0] * p.grad.data.pow(2)
+        # Mean
+        with torch.no_grad():
+            for n, _ in model.feature_net.named_parameters():
+                fisher[n] = fisher[n] / all_num
+        return fisher
+    def criterion(self, t):
+        # Regularization for all previous tasks
+        loss_reg = 0
+        if t > 0:
+            for (name, param), (_, param_old) in zip(self.model.feature_net.named_parameters(), self.model_old.feature_net.named_parameters()):
+                loss_reg += torch.sum(self.fisher[name] * (param_old - param).pow(2)) / 2
+        return self.lamb * loss_reg

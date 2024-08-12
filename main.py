@@ -41,6 +41,7 @@ parser.add_argument('--loss_fun_name',default='pass',type=str,help='loss functio
 parser.add_argument('--drop_penalty_weight', default=0.001, type=float, help='drop penalty weight')
 parser.add_argument('--testmode', default=False, type=bool, help='if True, train on only 1000 samples')
 parser.add_argument('--proto_gen', default=False, type=bool, help='generate prototype in use')
+parser.add_argument('--fisher_loss', default=False, type=bool, help='use fisher loss')
 
 
 args = parser.parse_args()
