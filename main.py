@@ -24,9 +24,9 @@ from myNetwork import network
 from iCIFAR100 import iCIFAR100
 
 parser = argparse.ArgumentParser(description='Prototype Augmentation and Self-Supervision for Incremental Learning')
-parser.add_argument('--epochs', default=3, type=int, help='Total number of epochs to run')
+parser.add_argument('--epochs', default=101, type=int, help='Total number of epochs to run')
 parser.add_argument('--batch_size', default=64, type=int, help='Batch size for training')
-parser.add_argument('--print_freq', default=1, type=int, help='print frequency (default: 10)')
+parser.add_argument('--print_freq', default=10, type=int, help='print frequency (default: 10)')
 parser.add_argument('--data_name', default='cifar100', type=str, help='Dataset name to use')
 parser.add_argument('--total_nc', default=100, type=int, help='class number for the dataset')
 parser.add_argument('--fg_nc', default=50, type=int, help='the number of classes in first task')
@@ -39,8 +39,8 @@ parser.add_argument('--gpu', default='0', type=str, help='GPU id to use')
 parser.add_argument('--save_path', default='model_saved_check/', type=str, help='save files directory')
 parser.add_argument('--loss_fun_name',default='pass',type=str,help='loss function name')
 parser.add_argument('--drop_penalty_weight', default=0.001, type=float, help='drop penalty weight')
-parser.add_argument('--testmode', default=True, type=bool, help='test mode')
-parser.add_argument('--proto_gen', default=False, type=bool, help='generate b  prototype in use')
+parser.add_argument('--testmode', default=False, type=bool, help='if True, train on only 1000 samples')
+parser.add_argument('--proto_gen', default=False, type=bool, help='generate prototype in use')
 
 
 args = parser.parse_args()

@@ -49,12 +49,12 @@ class protoAugSSL:
         self.train_dataset = iCIFAR100('./dataset',
                                        transform=self.train_transform,
                                        download=True,
-                                       testmode=True)
+                                       testmode=args.testmode)
         self.test_dataset = iCIFAR100('./dataset',
                                       test_transform=self.test_transform,
                                       train=False,
                                       download=True,
-                                      testmode=True)
+                                      testmode=args.testmode)
         self.train_loader = None  #
         self.test_loader = None
 
