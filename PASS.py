@@ -11,12 +11,7 @@ import sys
 import numpy as np
 from myNetwork import network
 from iCIFAR100 import iCIFAR100
-from bSplineProto import bSplineProto
 
-from PIL import Image
-from skimage.feature import hog
-from skimage import color
-from sklearn.decomposition import PCA
 
 
 class protoAugSSL:
@@ -34,7 +29,8 @@ class protoAugSSL:
         self.task_size = task_size  #每个任务学到的类别数
         self.device = device
         self.old_model = None
-        self.history_accuracies = None
+        self.history_accuracies = 0.0
+        self.protoList=[]
         #预处理
         self.train_transform = transforms.Compose([
             transforms.RandomCrop((32, 32), padding=4),  #随机裁剪
@@ -62,32 +58,6 @@ class protoAugSSL:
         self.train_loader = None  #
         self.test_loader = None
 
-    def _hog_pca_feature_extractor(image, pca, target_dim=128):
-        # 将PIL图像转换为numpy数组
-        image_np = np.array(image)
-        # 转换为灰度图，因为HOG通常在灰度图上计算
-        if len(image_np.shape) == 3:
-            image_np = color.rgb2gray(image_np)
-        #计算PCA
-        pca = PCA(n_components=target_dim)
-        pca.fit(image_np)
-
-        # 计算HOG特征
-        hog_features = hog(image_np,
-                           pixels_per_cell=(8, 8),
-                           cells_per_block=(2, 2),
-                           orientations=9)
-
-        # 展平HOG特征为一维数组
-        hog_features_flatten = hog_features.flatten()
-
-        # 应用PCA降维
-        pca_features = pca.transform(hog_features_flatten.reshape(
-            1, -1)).flatten()
-
-        # 将PCA降维后的特征转换为Tensor
-        pca_tensor = torch.tensor(pca_features[0], dtype=torch.float32)
-        return pca_tensor
 
     def map_new_class_index(self, y, order):
         '''
@@ -173,6 +143,14 @@ class protoAugSSL:
                 images = images.view(-1, 3, 32, 32)
                 target = torch.stack([target * 4 + k for k in range(4)],
                                      1).view(-1)
+                
+                if self.args.proto_gen:
+                    for proto in self.protoList:
+                        img,tgt=proto.generate()
+                        images = torch.cat((images, img), dim=0)
+                        target = torch.cat((target, tgt), dim=0)
+
+
 
                 opt.zero_grad()  # 梯度清零
                 loss = self._compute_loss(
@@ -216,6 +194,7 @@ class protoAugSSL:
                               4]  # only compute predictions on original class nodes
             predicts = torch.max(outputs, dim=1)[1]
             return predicts
+        
     def _compute_loss(self, imgs, target, old_class=0, loss_fun_name='pass'):
         if loss_fun_name == 'pass':
             """
@@ -286,8 +265,6 @@ class protoAugSSL:
                 feature = self.model.feature(imgs)
                 feature_old = self.old_model.feature(imgs)
                 loss_kd = torch.dist(feature, feature_old, 2)
-                # loss_b = BSplineSmoothLoss(lam=0.1)(output, target)
-                # return loss_cls + self.args.kd_weight * loss_kd + loss_b
                 output=self._test(self.test_loader)
                 drop_penalty = max(0, self.history_accuracies - output)
                 
@@ -303,7 +280,7 @@ class protoAugSSL:
         path = self.args.save_path + self.file_name + '/'
         if not os.path.isdir(path):
             os.makedirs(path)
-        if self.numclass == self.args.fg_nc:
+        if self.numclass == self.args.fg_nc:#第一个任务
             self.history_accuracies=self._test(self.test_loader)
         else:
             self.history_accuracies=self._test(self.test_loader)
@@ -318,7 +295,17 @@ class protoAugSSL:
     def protoSave(self, model, loader, current_task):
         """
         这段代码定义了一个名为 protoSave 的方法，用于保存模型的原型。这个方法接收三个参数：模型、数据加载器和当前任务的索引。
+        首先，代码创建了三个空列表prototype、radius和class_label，用于存储每个类别的原型、半径和标签。
+
+        然后，代码遍历了所有的唯一标签（labels_set）。对于每个标签，它首先找到所有属于该类别的样本（np.where(item == labels)[0]），然后计算这些样本的特征的平均值，作为该类别的原型，并将其添加到prototype列表中。
+
+        如果当前任务是第一个任务（current_task == 0），那么代码还会计算该类别的半径。半径是通过计算特征的协方差矩阵的迹，然后除以特征的维度得到的。这个半径被添加到radius列表中。
+
+        在计算完所有类别的原型和半径后，如果当前任务是第一个任务，那么代码会将radius列表中的所有值取平方根，然后计算平均值，作为最终的半径，并将其保存为类的属性。同时，prototype和class_label列表也被保存为类的属性。
+
+        如果当前任务不是第一个任务，那么代码会将新计算的原型和类别标签添加到已有的原型和类别标签中。这是通过np.concatenate函数实现的，该函数可以将两个数组沿指定的轴连接起来。
         """
+
         features = []
         labels = []
         model.eval()
@@ -337,17 +324,7 @@ class protoAugSSL:
             features,
             (features.shape[0] * features.shape[1], features.shape[2]))
         feature_dim = features.shape[1]
-        '''
-首先，代码创建了三个空列表prototype、radius和class_label，用于存储每个类别的原型、半径和标签。
 
-然后，代码遍历了所有的唯一标签（labels_set）。对于每个标签，它首先找到所有属于该类别的样本（np.where(item == labels)[0]），然后计算这些样本的特征的平均值，作为该类别的原型，并将其添加到prototype列表中。
-
-如果当前任务是第一个任务（current_task == 0），那么代码还会计算该类别的半径。半径是通过计算特征的协方差矩阵的迹，然后除以特征的维度得到的。这个半径被添加到radius列表中。
-
-在计算完所有类别的原型和半径后，如果当前任务是第一个任务，那么代码会将radius列表中的所有值取平方根，然后计算平均值，作为最终的半径，并将其保存为类的属性。同时，prototype和class_label列表也被保存为类的属性。
-
-如果当前任务不是第一个任务，那么代码会将新计算的原型和类别标签添加到已有的原型和类别标签中。这是通过np.concatenate函数实现的，该函数可以将两个数组沿指定的轴连接起来。
-        '''
         prototype = []  #原型
         radius = []  #原型的半径，通过原型生成时会用到
         class_label = []  #类标签
@@ -370,18 +347,3 @@ class protoAugSSL:
                                             axis=0)
             self.class_label = np.concatenate((class_label, self.class_label),
                                               axis=0)
-
-class BSplineSmoothLoss(nn.Module):
-    def __init__(self, lam=0.1):
-        super(BSplineSmoothLoss, self).__init__()
-        self.lam = lam
-
-    def forward(self, y_pred, y_true):
-
-        # B-spline smoothness regularization term
-        # Assuming y_pred is a tensor with shape [batch_size, sequence_length]
-        # Compute the second-order difference for each sequence in the batch
-        diff = y_pred[:, 2:] - 2 * y_pred[:, 1:-1] + y_pred[:, :-2]
-        smoothness_loss = torch.mean(diff**2)
-
-        return self.lam * smoothness_loss
