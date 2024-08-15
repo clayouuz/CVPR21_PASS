@@ -11,8 +11,8 @@ import sys
 import numpy as np
 from myNetwork import network
 from iCIFAR100 import iCIFAR100
-
-
+from Packnet import PackNet
+import copy
 
 class protoAugSSL:
 
@@ -22,6 +22,7 @@ class protoAugSSL:
         self.epochs = args.epochs
         self.learning_rate = args.learning_rate
         self.model = network(args.fg_nc * 4, feature_extractor)
+        self.packmodel=copy.deepcopy(self.model)
         self.radius = 0
         self.prototype = None
         self.class_label = None
@@ -29,8 +30,15 @@ class protoAugSSL:
         self.task_size = task_size  #每个任务学到的类别数
         self.device = device
         self.old_model = None
+        self.oldpackmodel=None
         self.history_accuracies = 0.0
         self.protoList=[]
+        self.fisher= None
+
+        #剪枝
+        self.pack=PackNet(args.task_num,local_ep=args.local_ep,local_rep_ep=args.local_local_ep,device=self.device,prune_instructions= 1 - args.store_rate)
+
+
         #预处理
         self.train_transform = transforms.Compose([
             transforms.RandomCrop((32, 32), padding=4),  #随机裁剪
@@ -102,6 +110,9 @@ class protoAugSSL:
             self.model.Incremental_learning(4 * self.numclass)
         self.model.train()  #设置为训练模式
         self.model.to(self.device)
+        self.packmodel.to(self.device)
+        self.oldpackmodel = copy.deepcopy(self.packmodel)
+        self.fisher=self.fisher_matrix_diag(0)
 
     def _get_train_and_test_dataloader(self, classes):
         self.train_dataset.getTrainData(classes)
@@ -128,10 +139,32 @@ class protoAugSSL:
         opt = torch.optim.Adam(self.model.parameters(),
                                lr=self.learning_rate,
                                weight_decay=2e-4)
+        if current_task > 0:
+            opt_pack = torch.optim.Adam(self.packmodel.parameters(),
+                                 lr=self.learning_rate,
+                                 weight_decay=2e-4)
+        else:
+            opt_pack = opt
         # 学习率调整，方法为每45个epoch，学习率乘以0.1
         scheduler = StepLR(opt, step_size=45, gamma=0.1)
         accuracy = 0
+        self.pack.on_init_end(self.packmodel,current_task)
+        if len(self.pack.masks) > current_task:
+            self.pack.masks.pop()
         for epoch in range(self.epochs):
+
+            # if epoch < self.args.local_local_ep:
+            #     for name,para in self.model.named_parameters():
+            #         if 'feature_net' in name:
+            #             para.requires_grad = False
+            #         else:
+            #             para.requires_grad = True
+            # else :
+            #     for name,para in self.model.named_parameters():
+            #         if 'feature_net' in name:
+            #             para.requires_grad = True
+            #         else:
+            #             para.requires_grad = False
             scheduler.step()
             for step, (indexs, images, target) in enumerate(self.train_loader):
                 images, target = images.to(self.device), target.to(self.device)
@@ -144,26 +177,32 @@ class protoAugSSL:
                 target = torch.stack([target * 4 + k for k in range(4)],
                                      1).view(-1)
                 
-                if self.args.proto_gen:
-                    for proto in self.protoList:
-                        img,tgt=proto.generate()
-                        images = torch.cat((images, img), dim=0)
-                        target = torch.cat((target, tgt), dim=0)
-
-
-
                 opt.zero_grad()  # 梯度清零
                 loss = self._compute_loss(
                     images,
                     target,
                     old_class,
-                    loss_fun_name=self.args.loss_fun_name)
+                    loss_fun_name=self.args.loss_fun_name,
+                    current_task=current_task)  # 计算损失
                 opt.zero_grad()
                 loss.backward()  #通过链式法则，从损失开始，沿着计算图向后传播，计算每个参数的梯度。
                 opt.step()  #通过使用计算出的梯度，按照优化器的更新规则（如梯度下降、Adam 等）更新每个参数。
             if epoch % self.args.print_freq == 0:
                 accuracy = self._test(self.test_loader)
                 print('epoch:%d, accuracy:%.5f' % (epoch, accuracy))
+            
+            self.pack.on_epoch_end(self.packmodel.feature,epoch,current_task)
+            
+        fisher_old = {}
+        if current_task>0:
+            for n, _ in self.model.feature.named_parameters():
+                fisher_old[n] = self.fisher[n].clone()
+        self.fisher = self.fisher_matrix_diag(current_task)
+        if current_task > 0:
+            # Watch out! We do not want to keep t models (or fisher diagonals) in memory, therefore we have to merge fisher diagonals
+            for n, _ in self.model.feature.named_parameters():
+                self.fisher[n] = (self.fisher[n] + fisher_old[n] * current_task) / (
+                        current_task + 1)  # Checked: it is better than the other option
         # 保存模型的原型，用于下一次训练
         self.protoSave(self.model, self.train_loader, current_task)
 
@@ -195,86 +234,85 @@ class protoAugSSL:
             predicts = torch.max(outputs, dim=1)[1]
             return predicts
         
-    def _compute_loss(self, imgs, target, old_class=0, loss_fun_name='pass'):
-        if loss_fun_name == 'pass':
-            """
-            这段代码定义了一个名为 _compute_loss 的方法，用于计算模型的损失。这个方法接收三个参数：图像、目标和旧类别的数量。
+    def _compute_loss(self, imgs, target, old_class=0, loss_fun_name='pass',current_task=0):
+        loss=0
+        """
+        这段代码定义了一个名为 _compute_loss 的方法，用于计算模型的损失。这个方法接收三个参数：图像、目标和旧类别的数量。
 
-            首先，这个方法调用模型的前向传播方法，计算模型在这批图像上的输出。然后，将输出和目标都移动到设备上，计算分类损失。这里使用的是交叉熵损失，且在计算损失之前，将模型的输出除以一个温度参数，这是一种常用的技巧，可以使模型的预测更加平滑。
+        首先，这个方法调用模型的前向传播方法，计算模型在这批图像上的输出。然后，将输出和目标都移动到设备上，计算分类损失。这里使用的是交叉熵损失，且在计算损失之前，将模型的输出除以一个温度参数，这是一种常用的技巧，可以使模型的预测更加平滑。
 
-            如果没有旧模型，就直接返回分类损失。否则，还需要计算知识蒸馏损失和原型增强损失。
+        如果没有旧模型，就直接返回分类损失。否则，还需要计算知识蒸馏损失和原型增强损失。
 
-            知识蒸馏损失是新模型的特征和旧模型的特征之间的欧氏距离。这个损失的目的是让新模型的特征尽可能接近旧模型的特征。
+        知识蒸馏损失是新模型的特征和旧模型的特征之间的欧氏距离。这个损失的目的是让新模型的特征尽可能接近旧模型的特征。
 
-            原型增强损失是对原型进行随机扰动后的特征和原型的类别之间的交叉熵损失。首先，对旧类别的索引进行随机打乱，然后对每个索引对应的原型添加一个正态随机噪声，得到扰动后的原型。然后，计算扰动后的原型的类别，这个类别是原型的类别乘以4。然后，将扰动后的原型和类别都移动到设备上，计算模型在扰动后的原型上的输出，然后计算输出和类别之间的交叉熵损失。
+        原型增强损失是对原型进行随机扰动后的特征和原型的类别之间的交叉熵损失。首先，对旧类别的索引进行随机打乱，然后对每个索引对应的原型添加一个正态随机噪声，得到扰动后的原型。然后，计算扰动后的原型的类别，这个类别是原型的类别乘以4。然后，将扰动后的原型和类别都移动到设备上，计算模型在扰动后的原型上的输出，然后计算输出和类别之间的交叉熵损失。
 
-            最后，返回分类损失、原型增强损失和知识蒸馏损失的加权和。这里的权重是可以调节的超参数，可以根据实际情况进行调整。
+        最后，返回分类损失、原型增强损失和知识蒸馏损失的加权和。这里的权重是可以调节的超参数，可以根据实际情况进行调整。
 
-            总的来说，这个方法的主要目的是计算模型的损失，包括分类损失、知识蒸馏损失和原型增强损失。这三种损失各有其特点，分类损失关注模型的预测能力，知识蒸馏损失关注模型的特征保持一致性，原型增强损失关注模型对原型的鲁棒性。
-            """
-            #暂存模型对imgs的输出
-            output = self.model(imgs)
-            output, target = output.to(self.device), target.to(self.device)
-            #分类损失,计算方法为交叉熵损失，output除以温度参数，提高模型的泛化能力
-            loss_cls = nn.CrossEntropyLoss()(output / self.args.temp,
-                                             target.long())
-            if self.old_model is None:
-                return loss_cls
-            else:
-                feature = self.model.feature(imgs)
-                feature_old = self.old_model.feature(imgs)
-                #知识蒸馏损失，计算新旧模型的张量距离
-                loss_kd = torch.dist(feature, feature_old, 2)
+        总的来说，这个方法的主要目的是计算模型的损失，包括分类损失、知识蒸馏损失和原型增强损失。这三种损失各有其特点，分类损失关注模型的预测能力，知识蒸馏损失关注模型的特征保持一致性，原型增强损失关注模型对原型的鲁棒性。
+        """
+        #暂存模型对imgs的输出
+        output = self.model(imgs)
+        output, target = output.to(self.device), target.to(self.device)
+        #分类损失,计算方法为交叉熵损失，output除以温度参数，提高模型的泛化能力
+        loss_cls = nn.CrossEntropyLoss()(output / self.args.temp,
+                                            target.long())
+        if self.old_model is None:
+            return loss_cls
+        else:
+            feature = self.model.feature(imgs)
+            feature_old = self.old_model.feature(imgs)
+            #知识蒸馏损失，计算新旧模型的张量距离
+            loss_kd = torch.dist(feature, feature_old, 2)
 
-                proto_aug = []
-                proto_aug_label = []
-                index = list(range(old_class))
-                #对原型进行随机扰动
-                for _ in range(self.args.batch_size):
-                    np.random.shuffle(index)
-                    if len(self.prototype) <= index[0]:
+            proto_aug = []
+            proto_aug_label = []
+            index = list(range(old_class))
+            #对原型进行随机扰动
+            for _ in range(self.args.batch_size):
+                np.random.shuffle(index)
+                if len(self.prototype) <= index[0]:
 
-                        temp = np.random.normal(0, 1, 512) * self.radius
-                    else:
-                        temp = self.prototype[index[0]] + np.random.normal(
-                            0, 1, 512) * self.radius
-                    proto_aug.append(temp)
-                    if len(self.class_label) <= index[0]:
-                        proto_aug_label.append(0)
-                    else:
-                        proto_aug_label.append(4 * self.class_label[index[0]])
+                    temp = np.random.normal(0, 1, 512) * self.radius
+                else:
+                    temp = self.prototype[index[0]] + np.random.normal(
+                        0, 1, 512) * self.radius
+                proto_aug.append(temp)
+                if len(self.class_label) <= index[0]:
+                    proto_aug_label.append(0)
+                else:
+                    proto_aug_label.append(4 * self.class_label[index[0]])
 
-                proto_aug = torch.from_numpy(np.float32(
-                    np.asarray(proto_aug))).float().to(self.device)
-                proto_aug_label = torch.from_numpy(
-                    np.asarray(proto_aug_label)).to(self.device)
-                soft_feat_aug = self.model.fc(proto_aug)
-                #原型增强损失
-                loss_protoAug = nn.CrossEntropyLoss()(
-                    (soft_feat_aug / self.args.temp), proto_aug_label.long())
+            proto_aug = torch.from_numpy(np.float32(
+                np.asarray(proto_aug))).float().to(self.device)
+            proto_aug_label = torch.from_numpy(
+                np.asarray(proto_aug_label)).to(self.device)
+            soft_feat_aug = self.model.fc(proto_aug)
+            #原型增强损失
+            loss_protoAug = nn.CrossEntropyLoss()(
+                (soft_feat_aug / self.args.temp), proto_aug_label.long())
+            
+            loss_cls=0
+            loss+=loss_cls + self.args.alpha * loss_kd + self.args.beta * loss_protoAug
+        if loss_fun_name == 'fedknow':
+            for t in current_task:
 
-                return loss_cls + self.args.protoAug_weight * loss_protoAug + self.args.kd_weight * loss_kd
-        elif loss_fun_name == 'test_loss':
-            output = self.model(imgs)
-            output, target = output.to(self.device), target.to(self.device)
-            loss_cls = nn.CrossEntropyLoss()(output / self.args.temp,
-                                             target.long())
-            if self.old_model is None:
-                return loss_cls
-            else:
-                feature = self.model.feature(imgs)
-                feature_old = self.old_model.feature(imgs)
-                loss_kd = torch.dist(feature, feature_old, 2)
-                output=self._test(self.test_loader)
-                drop_penalty = max(0, self.history_accuracies - output)
-                
-                # #模拟输出
-                # self.model.eval()
-                # predicts = self._output(self.test_loader)
-                # drop_loss=(predicts-target)**2
-                # drop_penalty= drop_loss.max()
-
-                return loss_cls + self.args.kd_weight * loss_kd + self.args.drop_penalty_weight*drop_penalty
+                self.model.zero_grad()
+                self.optimizer.zero_grad()
+                begin, end = self.compute_offsets(t, self.numclass)
+                temppackmodel = copy.deepcopy(self.oldpackmodel).to(self.device)
+                temppackmodel.train()
+                self.pack.apply_eval_mask(task_idx=t, model=temppackmodel.feature)
+                preoutputs = self.model.forward(imgs,t)[:, begin:end]
+                with torch.no_grad():
+                    oldLabels = temppackmodel.forward(imgs, t)[:, begin:end]
+                memoryloss = nn.CrossEntropyLoss()(preoutputs, oldLabels.long())
+                memoryloss.backward()
+                del temppackmodel
+                loss_cut += self.criterion(t) + memoryloss
+            loss+=loss_cut
+        return loss
+        
 
     def afterTrain(self):
         path = self.args.save_path + self.file_name + '/'
@@ -291,6 +329,7 @@ class protoAugSSL:
         self.old_model = torch.load(filename)
         self.old_model.to(self.device)
         self.old_model.eval()
+        
 
     def protoSave(self, model, loader, current_task):
         """
@@ -349,7 +388,7 @@ class protoAugSSL:
                                               axis=0)
             
 #fedknow-fisher
-    def compute_offsets(task, nc_per_task, is_cifar=True):
+    def compute_offsets(self,task, nc_per_task, is_cifar=True):
         """
             Compute offsets for cifar to determine which
             outputs to select for a given task.
@@ -362,38 +401,40 @@ class protoAugSSL:
             offset2 = nc_per_task
         return offset1, offset2
 
-    def fisher_matrix_diag(self,t,dataloader, model):
+    def fisher_matrix_diag(self,t):
         # Init
         fisher = {}
-        for n, p in model.feature_net.named_parameters():
+        _model=self.model
+
+        for n, p in _model.feature.named_parameters():
             fisher[n] = 0 * p.data
         # Compute
-        model.train()
+        _model.train()
         criterion = torch.nn.CrossEntropyLoss()
-        offset1, offset2 = self.compute_offsets(t, 10)
+        offset1, offset2 = self.compute_offsets(t, self.task_size)
         all_num = 0
-        for images,target in dataloader:
-            images = images.cuda()
-            target = (target - 10 * t).cuda()
+        for step, (indexs, images, target) in enumerate(self.train_loader):
+            images, target = images.to(self.device), target.to(self.device)
+            target = (target - 10 * t)
             all_num += images.shape[0]
             # Forward and backward
-            model.zero_grad()
-            outputs = model.forward(images, t)[:, offset1: offset2]
-            loss = criterion(outputs, target)
+            _model.zero_grad()
+            outputs = _model.forward(images, t)[:, offset1: offset2]
+            loss = criterion(outputs, target.long())
             loss.backward()
             # Get gradients
-            for n, p in model.feature_net.named_parameters():
+            for n, p in _model.feature.named_parameters():
                 if p.grad is not None:
                     fisher[n] += images.shape[0] * p.grad.data.pow(2)
         # Mean
         with torch.no_grad():
-            for n, _ in model.feature_net.named_parameters():
+            for n, _ in _model.feature.named_parameters():
                 fisher[n] = fisher[n] / all_num
         return fisher
     def criterion(self, t):
         # Regularization for all previous tasks
         loss_reg = 0
         if t > 0:
-            for (name, param), (_, param_old) in zip(self.model.feature_net.named_parameters(), self.model_old.feature_net.named_parameters()):
+            for (name, param), (_, param_old) in zip(self.model.feature.named_parameters(), self.model_old.feature.named_parameters()):
                 loss_reg += torch.sum(self.fisher[name] * (param_old - param).pow(2)) / 2
         return self.lamb * loss_reg
