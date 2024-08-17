@@ -37,7 +37,7 @@ parser.add_argument('--kd_weight', default=10.0, type=float, help='knowledge dis
 parser.add_argument('--temp', default=0.1, type=float, help='trianing time temperature')
 parser.add_argument('--gpu', default='0', type=str, help='GPU id to use')
 parser.add_argument('--save_path', default='model_saved_check/', type=str, help='save files directory')
-parser.add_argument('--loss_fun_name',default='fedknow',type=str,help='loss function name')
+parser.add_argument('--loss_fun_name',default='pass',type=str,help='loss function name')
 parser.add_argument('--drop_penalty_weight', default=0.001, type=float, help='drop penalty weight')
 parser.add_argument('--testmode', default=True, type=bool, help='if True, train on only 1000 samples')
 parser.add_argument('--proto_gen', default=False, type=bool, help='generate prototype in use')
@@ -51,8 +51,8 @@ parser.add_argument('--store_rate', type=float, default=0.1,
 args = parser.parse_args()
 
 if args.testmode==True:
-    args.epochs=3
-    args.print_freq=2
+    args.epochs=1
+    args.print_freq=1
 print(args)
 def map_new_class_index(y, order):
     return np.array(list(map(lambda x: order.index(x), y)))
