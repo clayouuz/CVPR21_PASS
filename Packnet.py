@@ -134,10 +134,11 @@ class PackNet():
             for name, param_layer in model.named_parameters():
                 if 'bias' not in name:
 
-                    # get indices of all weights from previous masks
-                    prev_mask = torch.zeros(param_layer.size(), dtype=torch.bool, requires_grad=False).to(self.device)
-                    for i in range(0, task_idx + 1):
-                        prev_mask |= self.masks[i][name]
+                    # # get indices of all weights from previous masks
+                    # prev_mask = torch.zeros(param_layer.size(), dtype=torch.bool, requires_grad=False).to(self.device)
+                    # for i in range(0, task_idx + 1):
+                        # prev_mask |= self.masks[i][name]
+                    prev_mask |= self.masks[task_idx][name]    
 
                     # zero out all weights that are not in the mask for this task
                     param_layer *= prev_mask
