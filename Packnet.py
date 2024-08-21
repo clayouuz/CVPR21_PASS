@@ -208,14 +208,14 @@ class PackNet():
 
     def on_epoch_end(self, pl_module,epoch,task):
 
-        if epoch == self.prun_epoch - 1:  # Train epochs completed
-            self.mode = 'fine_tune'
-            if task == self.n_tasks - 1:
-                self.mask_remaining_params(pl_module)
-            else:
-                self.prune(task,
-                    model=pl_module,
-                    prune_quantile=self.prune_instructions)
+        # if epoch == self.prun_epoch - 1:  # Train epochs completed
+        self.mode = 'fine_tune'
+        if task == self.n_tasks - 1:
+            self.mask_remaining_params(pl_module)
+        else:
+            self.prune(task,
+                model=pl_module,
+                prune_quantile=self.prune_instructions)
 
-        elif epoch == self.total_epochs() - 1:  # Train and fine tune epochs completed
-            self.mode = 'train'
+        # elif epoch == self.total_epochs() - 1:  # Train and fine tune epochs completed
+        #     self.mode = 'train'
