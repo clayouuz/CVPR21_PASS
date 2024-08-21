@@ -22,7 +22,7 @@ class protoAugSSL:
         self.epochs = args.epochs
         self.learning_rate = args.learning_rate
         self.model = network(args.fg_nc * 4, feature_extractor)
-        self.packmodel=network(args.total_nc * 4, feature_extractor)
+        self.packmodel=None
         self.radius = 0
         self.prototype = None
         self.class_label = None
@@ -30,10 +30,11 @@ class protoAugSSL:
         self.task_size = task_size  #每个任务学到的类别数
         self.device = device
         self.old_model = None
-        self.oldpackmodel=None
+        self.pack_models = []
         self.history_accuracies = 0.0
         self.protoList=[]
         self.fisher= None
+        self.task_id = 0
 
         #剪枝
         self.pack=PackNet(args.task_num,local_ep=args.local_ep,local_rep_ep=args.local_local_ep,device=self.device,prune_instructions= 1 - args.store_rate)
@@ -102,17 +103,20 @@ class protoAugSSL:
 
         if current_task == 0:
             classes = [0, self.numclass]
+            self.packmodel=network(self.numclass*4, self.model.feature)
         else:
             classes = [self.numclass - self.task_size, self.numclass]
+            self.packmodel=network(self.task_size*4, self.model.feature)
         self.train_loader, self.test_loader = self._get_train_and_test_dataloader(
             classes)
         if current_task > 0:
             self.model.Incremental_learning(4 * self.numclass)
         self.model.train()  #设置为训练模式
+        self.packmodel.train()
         self.model.to(self.device)
         self.packmodel.to(self.device)
-        self.oldpackmodel = copy.deepcopy(self.packmodel)
-        self.fisher=self.fisher_matrix_diag(0)
+        self.pack_models.append(self.packmodel)
+        # self.fisher=self.fisher_matrix_diag(0)
 
     def _get_train_and_test_dataloader(self, classes):
         self.train_dataset.getTrainData(classes)
@@ -139,15 +143,14 @@ class protoAugSSL:
         opt = torch.optim.Adam(self.model.parameters(),
                                lr=self.learning_rate,
                                weight_decay=2e-4)
-        if current_task > 0:
-            opt_pack = torch.optim.Adam(self.packmodel.parameters(),
+        opt_pack = torch.optim.Adam(self.packmodel.parameters(),
                                  lr=self.learning_rate,
                                  weight_decay=2e-4)
-        else:
-            opt_pack = opt
+
         # 学习率调整，方法为每45个epoch，学习率乘以0.1
         scheduler = StepLR(opt, step_size=45, gamma=0.1)
         accuracy = 0
+        self.task_id = current_task
         self.pack.on_init_end(self.packmodel,current_task)
         while len(self.pack.masks) > current_task:
             self.pack.masks.pop()
@@ -176,6 +179,13 @@ class protoAugSSL:
                 target = torch.stack([target * 4 + k for k in range(4)],
                                      1).view(-1)
                 
+                #train packmodel
+                opt_pack.zero_grad()
+                loss_pack=nn.CrossEntropyLoss()(self.packmodel(images),target.long())
+                loss_pack.backward()
+                opt_pack.step()
+
+                #train model
                 opt.zero_grad()  # 梯度清零
                 loss = self._compute_loss(
                     images,
@@ -183,8 +193,7 @@ class protoAugSSL:
                     old_class,
                     loss_fun_name=self.args.loss_fun_name,
                     current_task=current_task)  # 计算损失
-                opt.zero_grad()
-                loss.backward(retain_graph=True)  #通过链式法则，从损失开始，沿着计算图向后传播，计算每个参数的梯度。
+                loss.backward()  #通过链式法则，从损失开始，沿着计算图向后传播，计算每个参数的梯度。
                 opt.step()  #通过使用计算出的梯度，按照优化器的更新规则（如梯度下降、Adam 等）更新每个参数。
 
             if epoch % self.args.print_freq == 0:
@@ -193,16 +202,16 @@ class protoAugSSL:
             
             self.pack.on_epoch_end(self.packmodel.feature,epoch,current_task)
             
-        fisher_old = {}
-        if current_task>0:
-            for n, _ in self.model.feature.named_parameters():
-                fisher_old[n] = self.fisher[n].clone()
-        self.fisher = self.fisher_matrix_diag(current_task)
-        if current_task > 0:
-            # Watch out! We do not want to keep t models (or fisher diagonals) in memory, therefore we have to merge fisher diagonals
-            for n, _ in self.model.feature.named_parameters():
-                self.fisher[n] = (self.fisher[n] + fisher_old[n] * current_task) / (
-                        current_task + 1)  # Checked: it is better than the other option
+        # fisher_old = {}
+        # if current_task>0:
+        #     for n, _ in self.model.feature.named_parameters():
+        #         fisher_old[n] = self.fisher[n].clone()
+        # self.fisher = self.fisher_matrix_diag(current_task)
+        # if current_task > 0:
+        #     # Watch out! We do not want to keep t models (or fisher diagonals) in memory, therefore we have to merge fisher diagonals
+        #     for n, _ in self.model.feature.named_parameters():
+        #         self.fisher[n] = (self.fisher[n] + fisher_old[n] * current_task) / (
+        #                 current_task + 1)  # Checked: it is better than the other option
         # 保存模型的原型，用于下一次训练
         self.protoSave(self.model, self.train_loader, current_task)
 
@@ -295,30 +304,26 @@ class protoAugSSL:
             loss_cls=0
             loss+=loss_cls + self.args.kd_weight * loss_kd + self.args.protoAug_weight * loss_protoAug
         if loss_fun_name == 'fedknow':
-            optimizer=torch.optim.Adam(self.model.parameters(),
-                               lr=self.learning_rate,
-                               weight_decay=2e-4)
+            # optimizer=torch.optim.Adam(self.model.parameters(),
+            #                    lr=self.learning_rate,
+            #                    weight_decay=2e-4)
             loss_cut=0
+            model_outputs = self.model.forward(imgs,t)
             for t in range(current_task):
-
-                # self.model.zero_grad()
-                optimizer.zero_grad()
-                begin, end = self.compute_offsets(t, self.numclass)
-                temppackmodel = copy.deepcopy(self.packmodel).to(self.device)
-                temppackmodel.train()
-                if t<len(self.pack.masks):
-                    self.pack.apply_eval_mask(task_idx=t, model=temppackmodel.feature)
-                preoutputs = self.model.forward(imgs,t)[:, begin:end]
-                with torch.no_grad():
-                    oldLabels = temppackmodel.forward(imgs, t)[:, begin:end]
                 
-                if oldLabels.shape==preoutputs.shape:
-                    memoryloss = nn.CrossEntropyLoss()(preoutputs.reshape(-1), oldLabels.reshape(-1))
+                begin, end = self.compute_offsets(t, self.numclass)
+                model_output=model_outputs[:, begin:end]
+                temppackmodel = copy.deepcopy(self.pack_models[t]).to(self.device)
+
+                with torch.no_grad():
+                    pack_output = temppackmodel.forward(imgs, t)
+                
+                if pack_output.shape==model_output.shape:
+                    memoryloss = nn.CrossEntropyLoss()(model_output.reshape(-1), pack_output.reshape(-1))
                 else:
-                    print('oldLabels:{},preoutputs:{}'.format(oldLabels.shape,preoutputs.shape))
-                memoryloss.backward(retain_graph=True)
+                    print('pack_output:{},model_output:{}'.format(pack_output.shape,model_output.shape))
                 del temppackmodel
-                loss_cut += self.criterion(t) + memoryloss
+                loss_cut += memoryloss
             loss+=loss_cut
         return loss
         
@@ -331,9 +336,10 @@ class protoAugSSL:
             self.history_accuracies=self._test(self.test_loader)
         else:
             self.history_accuracies=self._test(self.test_loader)
-        # self.packmodel=copy.deepcopy(self.model)
-        self.packmodel.fc[self.numclass*4:self.numclass*4+self.task_size*4].weight.data=self.model.fc.weight.data[self.numclass*4:self.numclass*4+self.task_size*4]
-        self.packmodel.fc[self.numclass*4:self.numclass*4+self.task_size*4].bias.data=self.model.fc.bias.data[self.numclass*4:self.numclass*4+self.task_size*4]
+        
+        self.pack.apply_eval_mask(task_idx=self.task_id, model=self.packmodel.feature)
+        self.packmodel.eval()
+
         self.numclass += self.task_size
         filename = path + '%d_model.pkl' % (self.numclass - self.task_size)
         torch.save(self.model, filename)
@@ -404,7 +410,10 @@ class protoAugSSL:
             Compute offsets for cifar to determine which
             outputs to select for a given task.
         """
-        if is_cifar:
+        if task==0:
+            offset1 = 0
+            offset2 = self.numclass*4
+        elif is_cifar:
             offset1 = task * nc_per_task*4
             offset2 = (task + 1) * nc_per_task*4
         else:
@@ -412,36 +421,36 @@ class protoAugSSL:
             offset2 = nc_per_task*4
         return offset1, offset2
 
-    def fisher_matrix_diag(self,t):
-        # Init
-        fisher = {}
-        _model=self.model
+    # def fisher_matrix_diag(self,t):
+    #     # Init
+    #     fisher = {}
+    #     _model=self.model
 
-        for n, p in _model.feature.named_parameters():
-            fisher[n] = 0 * p.data
-        # Compute
-        _model.train()
-        criterion = torch.nn.CrossEntropyLoss()
-        offset1, offset2 = self.compute_offsets(t, self.task_size)
-        all_num = 0
-        for step, (indexs, images, target) in enumerate(self.train_loader):
-            images, target = images.to(self.device), target.to(self.device)
-            target = (target - 10 * t)
-            all_num += images.shape[0]
-            # Forward and backward
-            _model.zero_grad()
-            outputs = _model.forward(images, t)[:, offset1: offset2]
-            loss = criterion(outputs, target.long())
-            loss.backward(retain_graph=True)
-            # Get gradients
-            for n, p in _model.feature.named_parameters():
-                if p.grad is not None:
-                    fisher[n] += images.shape[0] * p.grad.data.pow(2)
-        # Mean
-        with torch.no_grad():
-            for n, _ in _model.feature.named_parameters():
-                fisher[n] = fisher[n] / all_num
-        return fisher
+    #     for n, p in _model.feature.named_parameters():
+    #         fisher[n] = 0 * p.data
+    #     # Compute
+    #     _model.train()
+    #     criterion = torch.nn.CrossEntropyLoss()
+    #     offset1, offset2 = self.compute_offsets(t, self.task_size)
+    #     all_num = 0
+    #     for step, (indexs, images, target) in enumerate(self.train_loader):
+    #         images, target = images.to(self.device), target.to(self.device)
+    #         target = (target - 10 * t)
+    #         all_num += images.shape[0]
+    #         # Forward and backward
+    #         _model.zero_grad()
+    #         outputs = _model.forward(images, t)[:, offset1: offset2]
+    #         loss = criterion(outputs, target.long())
+    #         loss.backward(retain_graph=True)
+    #         # Get gradients
+    #         for n, p in _model.feature.named_parameters():
+    #             if p.grad is not None:
+    #                 fisher[n] += images.shape[0] * p.grad.data.pow(2)
+    #     # Mean
+    #     with torch.no_grad():
+    #         for n, _ in _model.feature.named_parameters():
+    #             fisher[n] = fisher[n] / all_num
+    #     return fisher
     def criterion(self, t):
         # Regularization for all previous tasks
         loss_reg = 0
