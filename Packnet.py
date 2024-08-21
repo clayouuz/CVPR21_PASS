@@ -138,6 +138,8 @@ class PackNet():
                     # prev_mask = torch.zeros(param_layer.size(), dtype=torch.bool, requires_grad=False).to(self.device)
                     # for i in range(0, task_idx + 1):
                         # prev_mask |= self.masks[i][name]
+
+                    prev_mask = torch.zeros(param_layer.size(), dtype=torch.bool,requires_grad=False).to(self.device)
                     prev_mask |= self.masks[task_idx][name]    
 
                     # zero out all weights that are not in the mask for this task
