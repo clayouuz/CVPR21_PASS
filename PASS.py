@@ -308,7 +308,7 @@ class protoAugSSL:
             #                    lr=self.learning_rate,
             #                    weight_decay=2e-4)
             loss_cut=0
-            model_outputs = self.model.forward(imgs,t)
+            model_outputs = self.model.forward(imgs,self.task_id)
             for t in range(current_task):
                 
                 begin, end = self.compute_offsets(t, self.numclass)
@@ -320,10 +320,11 @@ class protoAugSSL:
                 
                 if pack_output.shape==model_output.shape:
                     memoryloss = nn.CrossEntropyLoss()(model_output.reshape(-1), pack_output.reshape(-1))
+                    loss_cut += memoryloss
                 else:
                     print('pack_output:{},model_output:{}'.format(pack_output.shape,model_output.shape))
                 del temppackmodel
-                loss_cut += memoryloss
+                
             loss+=loss_cut
         return loss
         
@@ -412,7 +413,7 @@ class protoAugSSL:
         """
         if task==0:
             offset1 = 0
-            offset2 = self.numclass*4
+            offset2 = self.numclass*4+self.task_size*4
         elif is_cifar:
             offset1 = task * nc_per_task*4
             offset2 = (task + 1) * nc_per_task*4
