@@ -39,6 +39,8 @@ class network(nn.Module):
         
         h = self.feature(x)
         output = self.fc(h)
+        softmax=nn.Softmax(output,dim=1)
+        # output=softmax(output)
         # if is_con:
         #     # make sure we predict classes within the current task
         #     if pre:
