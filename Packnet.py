@@ -49,7 +49,7 @@ class PackNet():
                 if p is not None:
                     all_prunable = torch.cat((all_prunable.view(-1), p), -1)
         B = torch.abs(all_prunable.cpu()).detach().numpy()
-        if len(B) == 0:
+        if len(B) == 0 :
             print("No weights to prune")
             return
         cutoff = np.quantile(B, q=prune_quantile)
@@ -62,7 +62,7 @@ class PackNet():
                     for task in self.masks:
                         if name in task:
                             prev_mask |= task[name]
-
+                    # prev_mask |= self.masks[t][name]
                     curr_mask = torch.abs(param_layer).ge(cutoff)  # q
                     curr_mask = torch.logical_and(curr_mask, ~prev_mask)  # (q & ~p)
 

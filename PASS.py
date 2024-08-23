@@ -186,6 +186,7 @@ class protoAugSSL:
                 #train packmodel
                 opt_pack.zero_grad()
                 loss_pack=nn.CrossEntropyLoss()(self.packmodel(images),target.long())
+                opt_pack.zero_grad()
                 loss_pack.backward()
                 opt_pack.step()
 
@@ -197,6 +198,7 @@ class protoAugSSL:
                     old_class,
                     loss_fun_name=self.args.loss_fun_name,
                     current_task=current_task)  # 计算损失
+                opt.zero_grad()
                 loss.backward()  #通过链式法则，从损失开始，沿着计算图向后传播，计算每个参数的梯度。
                 opt.step()  #通过使用计算出的梯度，按照优化器的更新规则（如梯度下降、Adam 等）更新每个参数。
                 # print('one step end')
@@ -307,7 +309,6 @@ class protoAugSSL:
             loss_protoAug = nn.CrossEntropyLoss()(
                 (soft_feat_aug / self.args.temp), proto_aug_label.long())
             
-            loss_cls=0
             loss+=loss_cls + self.args.kd_weight * loss_kd + self.args.protoAug_weight * loss_protoAug
         if loss_fun_name == 'fedknow':
             # optimizer=torch.optim.Adam(self.model.parameters(),
@@ -335,9 +336,8 @@ class protoAugSSL:
                     print('pack_output:{},model_output:{}'.format(pack_output.shape,model_output.shape))
                     
                 del temppackmodel
-                
-            loss+=loss_cut
-        print(loss_cls,loss_kd,loss_protoAug,loss_cut)
+            loss+=loss_cut*self.args.cut_weight
+        # print(loss_cls,'\n',loss_kd*self.args.kd_weight,'\n',loss_protoAug*self.args.protoAug_weight,'\n',loss_cut*self.args.cut_weight)
         return loss
         
 
@@ -349,8 +349,8 @@ class protoAugSSL:
             self.history_accuracies=self._test(self.test_loader)
         else:
             self.history_accuracies=self._test(self.test_loader)
-        
-            self.pack.apply_eval_mask(task_idx=self.task_id, model=self.packmodel.feature)
+            if self.task_id<self.args.task_num:
+                self.pack.apply_eval_mask(task_idx=self.task_id, model=self.packmodel.feature)
             self.packmodel.eval()
 
         self.numclass += self.task_size
