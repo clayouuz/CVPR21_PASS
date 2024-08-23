@@ -49,7 +49,7 @@ class PackNet():
                 if p is not None:
                     all_prunable = torch.cat((all_prunable.view(-1), p), -1)
         B = torch.abs(all_prunable.cpu()).detach().numpy()
-        if len(B) == 0 or len(prune_quantile) == 0:
+        if len(B) == 0:
             print("No weights to prune")
             return
         cutoff = np.quantile(B, q=prune_quantile)
