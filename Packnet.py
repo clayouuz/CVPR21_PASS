@@ -16,8 +16,8 @@ class PackNet():
         self.prunable_types = prunable_types
         self.device = device
         # Set up an array of quantiles for pruning procedure
-        if n_tasks:
-            self.config_instructions()
+        # if n_tasks:
+        #     self.config_instructions()
 
         self.PATH = None
         self.prun_epoch = local_ep - local_rep_ep
@@ -49,6 +49,9 @@ class PackNet():
                 if p is not None:
                     all_prunable = torch.cat((all_prunable.view(-1), p), -1)
         B = torch.abs(all_prunable.cpu()).detach().numpy()
+        if len(B) == 0 or len(prune_quantile) == 0:
+            print("No weights to prune")
+            return
         cutoff = np.quantile(B, q=prune_quantile)
         mask = {}  # create mask for this task
         with torch.no_grad():
@@ -129,6 +132,7 @@ class PackNet():
         :param task_idx: the task id to be evaluated (0 - > n_tasks)
         """
         assert len(self.masks) > task_idx
+    
 
         with torch.no_grad():
             for name, param_layer in model.named_parameters():
