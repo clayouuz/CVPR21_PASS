@@ -13,6 +13,7 @@ from myNetwork import network
 from iCIFAR100 import iCIFAR100
 from Packnet import PackNet
 import copy
+from ResNet import resnet18_cbam
 
 class protoAugSSL:
 
@@ -103,10 +104,10 @@ class protoAugSSL:
 
         if current_task == 0:
             classes = [0, self.numclass]
-            self.packmodel=network(self.numclass*4, self.model.feature)
+            self.packmodel=copy.deepcopy(self.model)
         else:
             classes = [self.numclass - self.task_size, self.numclass]
-            self.packmodel=network(self.task_size*4, self.model.feature)
+            self.packmodel=network(self.task_size*4, resnet18_cbam())
         self.train_loader, self.test_loader = self._get_train_and_test_dataloader(
             classes)
         if current_task > 0:
@@ -117,6 +118,9 @@ class protoAugSSL:
         self.packmodel.to(self.device)
         self.pack_models.append(self.packmodel)
         # self.fisher=self.fisher_matrix_diag(0)
+        # print('beforeTrain end')
+        # print(self.model.fc.weight.shape)
+        # print(self.packmodel.fc.weight.shape)
 
     def _get_train_and_test_dataloader(self, classes):
         self.train_dataset.getTrainData(classes)
@@ -195,7 +199,9 @@ class protoAugSSL:
                     current_task=current_task)  # 计算损失
                 loss.backward()  #通过链式法则，从损失开始，沿着计算图向后传播，计算每个参数的梯度。
                 opt.step()  #通过使用计算出的梯度，按照优化器的更新规则（如梯度下降、Adam 等）更新每个参数。
-
+                # print('one step end')
+                # print(self.model.fc.weight.shape)
+                # print(self.packmodel.fc.weight.shape)
             if epoch % self.args.print_freq == 0:
                 accuracy = self._test(self.test_loader)
                 print('epoch:%d, accuracy:%.5f' % (epoch, accuracy))
@@ -312,6 +318,7 @@ class protoAugSSL:
             for t in range(current_task):
                 
                 begin, end = self.compute_offsets(t, self.numclass)
+                
                 model_output=model_outputs[:, begin:end]
                 temppackmodel = copy.deepcopy(self.pack_models[t]).to(self.device)
 
@@ -322,10 +329,15 @@ class protoAugSSL:
                     memoryloss = nn.CrossEntropyLoss()(model_output.reshape(-1), pack_output.reshape(-1))
                     loss_cut += memoryloss
                 else:
+                    print(self.model.fc.weight.shape)
+                    print(self.packmodel.fc.weight.shape)
+                    print('begin:{},end:{}'.format(begin,end))
                     print('pack_output:{},model_output:{}'.format(pack_output.shape,model_output.shape))
+                    
                 del temppackmodel
                 
             loss+=loss_cut
+        print(loss_cls,loss_kd,loss_protoAug,loss_cut)
         return loss
         
 
@@ -338,8 +350,8 @@ class protoAugSSL:
         else:
             self.history_accuracies=self._test(self.test_loader)
         
-        self.pack.apply_eval_mask(task_idx=self.task_id, model=self.packmodel.feature)
-        self.packmodel.eval()
+            self.pack.apply_eval_mask(task_idx=self.task_id, model=self.packmodel.feature)
+            self.packmodel.eval()
 
         self.numclass += self.task_size
         filename = path + '%d_model.pkl' % (self.numclass - self.task_size)
@@ -413,13 +425,10 @@ class protoAugSSL:
         """
         if task==0:
             offset1 = 0
-            offset2 = self.numclass*4+self.task_size*4
-        elif is_cifar:
-            offset1 = task * nc_per_task*4
-            offset2 = (task + 1) * nc_per_task*4
+            offset2 = self.args.fg_nc*4
         else:
-            offset1 = 0
-            offset2 = nc_per_task*4
+            offset1 = self.numclass*4-self.task_size*4*task
+            offset2 = offset1+self.task_size*4
         return offset1, offset2
 
     # def fisher_matrix_diag(self,t):

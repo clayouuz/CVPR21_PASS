@@ -9,15 +9,15 @@ import numpy as np
 
 class PackNet():
 
-    def __init__(self, n_tasks, local_ep,local_rep_ep,prune_instructions=.9, prunable_types=(nn.Conv2d, nn.Linear),device =None):
+    def __init__(self, n_tasks, local_ep,local_rep_ep,prune_instructions=0.9, prunable_types=(nn.Conv2d, nn.Linear),device =None):
 
         self.n_tasks = n_tasks
         self.prune_instructions = prune_instructions
         self.prunable_types = prunable_types
         self.device = device
         # Set up an array of quantiles for pruning procedure
-        # if n_tasks:
-        #     self.config_instructions()
+        if n_tasks:
+            self.config_instructions()
 
         self.PATH = None
         self.prun_epoch = local_ep - local_rep_ep
