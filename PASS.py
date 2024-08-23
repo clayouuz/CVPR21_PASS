@@ -327,7 +327,8 @@ class protoAugSSL:
                     pack_output = temppackmodel.forward(imgs, t)
                 
                 if pack_output.shape==model_output.shape:
-                    memoryloss = nn.CrossEntropyLoss()(model_output.reshape(-1), pack_output.reshape(-1))
+                    # memoryloss = nn.CrossEntropyLoss()(model_output.reshape(-1), pack_output.reshape(-1))
+                    memoryloss=torch.dist(model_output.reshape(-1), pack_output.reshape(-1),2)
                     loss_cut += memoryloss
                 else:
                     print(self.model.fc.weight.shape)
@@ -336,8 +337,10 @@ class protoAugSSL:
                     print('pack_output:{},model_output:{}'.format(pack_output.shape,model_output.shape))
                     
                 del temppackmodel
+            loss_cut/=(self.task_id)
             loss+=loss_cut*self.args.cut_weight
-        # print(loss_cls,'\n',loss_kd*self.args.kd_weight,'\n',loss_protoAug*self.args.protoAug_weight,'\n',loss_cut*self.args.cut_weight)
+        # if self.args.testmode:
+        #     print(loss_cls,'\n',loss_kd*self.args.kd_weight,'\n',loss_protoAug*self.args.protoAug_weight,'\n',loss_cut*self.args.cut_weight)
         return loss
         
 
