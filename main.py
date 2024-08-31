@@ -35,24 +35,22 @@ parser.add_argument('--task_num', default=10, type=int, help='the number of incr
 parser.add_argument('--learning_rate', default=0.001, type=float, help='initial learning rate')
 parser.add_argument('--protoAug_weight', default=10.0, type=float, help='protoAug loss weight')
 parser.add_argument('--kd_weight', default=10.0, type=float, help='knowledge distillation loss weight')
-parser.add_argument('--cut_weight', default=10.0, type=float, help='cut loss weight')
+parser.add_argument('--cut_weight', default=1.0, type=float, help='cut loss weight')
 
 parser.add_argument('--temp', default=0.1, type=float, help='trianing time temperature')
 parser.add_argument('--gpu', default='0', type=str, help='GPU id to use')
 parser.add_argument('--save_path', default='model_saved_check/', type=str, help='save files directory')
-parser.add_argument('--loss_fun_name',default='pass',type=str,help='loss function name')
+parser.add_argument('--loss_fun_name',default='fedknow',type=str,help='loss function name')
 parser.add_argument('--drop_penalty_weight', default=0.001, type=float, help='drop penalty weight')
 
-parser.add_argument('--testmode', default=True, type=bool, help='if True, train on only 1000 samples')
-parser.add_argument('--proto_simulation', default=False, type=bool, help='generate with prototype simulation')
+parser.add_argument('--testmode', default=False, type=bool, help='if True, train on only 1000 samples')
+parser.add_argument('--proto_gen', default=False, type=bool, help='generate prototype in use')
 parser.add_argument('--fisher_loss', default=False, type=bool, help='use fisher loss')
-
 parser.add_argument('--network',default='pass_net',type=str,help='network name,pass_net or RepTail')
 parser.add_argument('--local_ep', type=int, default=6, help="the number of local epochs: E")
 parser.add_argument('--local_local_ep', type=int, default=2, help="the number of local epochs for the representation for FedRep")
 parser.add_argument('--store_rate', type=float, default=0.1,
                         help='the store rate of model in FedKNOW')
-
 
 args = parser.parse_args()
 

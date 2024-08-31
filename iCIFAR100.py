@@ -40,10 +40,10 @@ class iCIFAR100(CIFAR100):
         datas, labels = self.concatenate(datas, labels)
         self.TestData = datas if self.TestData == [] else np.concatenate((self.TestData, datas), axis=0)
         self.TestLabels = labels if self.TestLabels == [] else np.concatenate((self.TestLabels, labels), axis=0)
-        self.TestData = self.TestData[:100]
-        if self.testmode:
-            self.TestLabels = self.TestLabels[:100]
-            print("now in test mode, only use 100 samples for testing")
+        # if self.testmode:
+        #     self.TestData = self.TestData[:100]
+        #     self.TestLabels = self.TestLabels[:100]
+        #     print("now in test mode, only use 100 samples for testing")
         print("the size of test set is %s" % (str(self.TestData.shape)))
         print("the size of test label is %s" % str(self.TestLabels.shape))
 
@@ -66,11 +66,11 @@ class iCIFAR100(CIFAR100):
             datas.append(data)
             labels.append(np.full((data.shape[0]), label))
         self.TrainData, self.TrainLabels = self.concatenate(datas, labels)
-        if self.testmode:
-            #for fast test, only use 1000 samples
-            self.TrainData = self.TrainData[:1000]
-            self.TrainLabels = self.TrainLabels[:1000]
-            print("now in test mode, only use 1000 samples for training")
+        # if self.testmode:
+        #     #for fast test, only use 1000 samples
+        #     self.TrainData = self.TrainData[:1000]
+        #     self.TrainLabels = self.TrainLabels[:1000]
+        #     print("now in test mode, only use 1000 samples for training")
         print("the size of train set is %s" % (str(self.TrainData.shape)))
         print("the size of train label is %s" % str(self.TrainLabels.shape))
 

@@ -10,7 +10,6 @@ import os
 import sys
 import numpy as np
 from myNetwork import network
-import myProto
 from iCIFAR100 import iCIFAR100
 from Packnet import PackNet
 import copy
@@ -161,6 +160,18 @@ class protoAugSSL:
             self.pack.masks.pop()
         for epoch in range(self.epochs):
 
+            # if epoch < self.args.local_local_ep:
+            #     for name,para in self.model.named_parameters():
+            #         if 'feature_net' in name:
+            #             para.requires_grad = False
+            #         else:
+            #             para.requires_grad = True
+            # else :
+            #     for name,para in self.model.named_parameters():
+            #         if 'feature_net' in name:
+            #             para.requires_grad = True
+            #         else:
+            #             para.requires_grad = False
             scheduler.step()
             for step, (indexs, images, target) in enumerate(self.train_loader):
                 images, target = images.to(self.device), target.to(self.device)
@@ -173,12 +184,11 @@ class protoAugSSL:
                                      1).view(-1)
                 
                 #train packmodel
-                if self.args.loss_fun_name == 'fedknow':
-                    opt_pack.zero_grad()
-                    loss_pack=nn.CrossEntropyLoss()(self.packmodel(images),target.long())
-                    opt_pack.zero_grad()
-                    loss_pack.backward()
-                    opt_pack.step()
+                opt_pack.zero_grad()
+                loss_pack=nn.CrossEntropyLoss()(self.packmodel(images),target.long())
+                opt_pack.zero_grad()
+                loss_pack.backward()
+                opt_pack.step()
 
                 #train model
                 opt.zero_grad()  # 梯度清零
@@ -187,6 +197,7 @@ class protoAugSSL:
                     target,
                     old_class,
                     loss_fun_name=self.args.loss_fun_name,
+                    epoch=epoch,
                     current_task=current_task)  # 计算损失
                 opt.zero_grad()
                 loss.backward()  #通过链式法则，从损失开始，沿着计算图向后传播，计算每个参数的梯度。
@@ -241,7 +252,7 @@ class protoAugSSL:
             predicts = torch.max(outputs, dim=1)[1]
             return predicts
         
-    def _compute_loss(self, imgs, target, old_class=0, loss_fun_name='pass',current_task=0):
+    def _compute_loss(self, imgs, target, old_class=0, loss_fun_name='pass',current_task=0,epoch=0):
         loss=0
         """
         这段代码定义了一个名为 _compute_loss 的方法，用于计算模型的损失。这个方法接收三个参数：图像、目标和旧类别的数量。
@@ -300,14 +311,14 @@ class protoAugSSL:
                 (soft_feat_aug / self.args.temp), proto_aug_label.long())
             
             loss+=loss_cls + self.args.kd_weight * loss_kd + self.args.protoAug_weight * loss_protoAug
-        if loss_fun_name == 'fedknow':
+        if loss_fun_name == 'fedknow' and epoch>0:
             # optimizer=torch.optim.Adam(self.model.parameters(),
             #                    lr=self.learning_rate,
             #                    weight_decay=2e-4)
             loss_cut=0
-            with torch.no_grad():
-                model_outputs = self.model.forward(imgs,self.task_id)
-            for t in range(current_task):
+            # model_outputs = self.model.forward(imgs,self.task_id)
+            model_outputs = self.model.sm(imgs,self.task_id)
+            for t in range(max(0,current_task-1)):
                 
                 begin, end = self.compute_offsets(t, self.numclass)
                 
@@ -315,11 +326,15 @@ class protoAugSSL:
                 temppackmodel = copy.deepcopy(self.pack_models[t]).to(self.device)
 
                 with torch.no_grad():
-                    pack_output = temppackmodel.forward(imgs, t)
-                
+                    # pack_output = temppackmodel.forward(imgs, t)
+                    pack_output = temppackmodel.sm(imgs, t)
+
                 if pack_output.shape==model_output.shape:
                     # memoryloss = nn.CrossEntropyLoss()(model_output.reshape(-1), pack_output.reshape(-1))
                     memoryloss=torch.dist(model_output.reshape(-1), pack_output.reshape(-1),2)
+                    if self.args.testmode==True:
+                        print('t:',t)
+                        print('memory loss:',memoryloss)
                     loss_cut += memoryloss
                 else:
                     print(self.model.fc.weight.shape)
@@ -330,8 +345,13 @@ class protoAugSSL:
                 del temppackmodel
             loss_cut/=(self.task_id)
             loss+=loss_cut*self.args.cut_weight
-        # if self.args.testmode:
-        #     print(loss_cls,'\n',loss_kd*self.args.kd_weight,'\n',loss_protoAug*self.args.protoAug_weight,'\n',loss_cut*self.args.cut_weight)
+            if self.args.testmode:
+                print(loss_cls,'\n',loss_kd*self.args.kd_weight,'\n',loss_protoAug*self.args.protoAug_weight,'\n',loss_cut*self.args.cut_weight)
+
+        if self.args.testmode:
+            if self.args.loss_fun_name!='fedknow':
+                print(loss_cls,'\n',loss_kd*self.args.kd_weight,'\n',loss_protoAug*self.args.protoAug_weight,'\n')
+
         return loss
         
 

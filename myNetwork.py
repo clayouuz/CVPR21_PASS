@@ -31,6 +31,13 @@ class network(nn.Module):
     #     x = self.feature(input)
     #     x = self.fc(x)
     #     return x
+    def sm(self, x, t=-1, pre=False, is_con=True, avg_act=False):
+        
+        h = self.feature(x)
+        output = self.fc(h)
+        softmax=nn.Softmax(dim=1)
+        output=softmax(output)
+        return output
     def forward(self, x, t=-1, pre=False, is_con=True, avg_act=False):
         # if t==-1:
         #     h = self.feature(x)
