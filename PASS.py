@@ -10,6 +10,7 @@ import os
 import sys
 import numpy as np
 from myNetwork import network
+import myProto
 from iCIFAR100 import iCIFAR100
 from Packnet import PackNet
 import copy
@@ -160,18 +161,6 @@ class protoAugSSL:
             self.pack.masks.pop()
         for epoch in range(self.epochs):
 
-            # if epoch < self.args.local_local_ep:
-            #     for name,para in self.model.named_parameters():
-            #         if 'feature_net' in name:
-            #             para.requires_grad = False
-            #         else:
-            #             para.requires_grad = True
-            # else :
-            #     for name,para in self.model.named_parameters():
-            #         if 'feature_net' in name:
-            #             para.requires_grad = True
-            #         else:
-            #             para.requires_grad = False
             scheduler.step()
             for step, (indexs, images, target) in enumerate(self.train_loader):
                 images, target = images.to(self.device), target.to(self.device)
@@ -184,11 +173,12 @@ class protoAugSSL:
                                      1).view(-1)
                 
                 #train packmodel
-                opt_pack.zero_grad()
-                loss_pack=nn.CrossEntropyLoss()(self.packmodel(images),target.long())
-                opt_pack.zero_grad()
-                loss_pack.backward()
-                opt_pack.step()
+                if self.args.loss_fun_name == 'fedknow':
+                    opt_pack.zero_grad()
+                    loss_pack=nn.CrossEntropyLoss()(self.packmodel(images),target.long())
+                    opt_pack.zero_grad()
+                    loss_pack.backward()
+                    opt_pack.step()
 
                 #train model
                 opt.zero_grad()  # 梯度清零
@@ -315,7 +305,8 @@ class protoAugSSL:
             #                    lr=self.learning_rate,
             #                    weight_decay=2e-4)
             loss_cut=0
-            model_outputs = self.model.forward(imgs,self.task_id)
+            with torch.no_grad():
+                model_outputs = self.model.forward(imgs,self.task_id)
             for t in range(current_task):
                 
                 begin, end = self.compute_offsets(t, self.numclass)
